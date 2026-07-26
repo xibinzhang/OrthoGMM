@@ -1,0 +1,927 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Computational Specification of Orthogonal Projection Estimation}
+\label{app:computational_specification}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+This appendix provides the formal computational specification underlying the
+orthogonal projection estimators developed in Sections~\ref{sec:projection}--
+\ref{sec:algorithm}. Its purpose is to translate the statistical objects of the
+main text into a model-independent collection of computational inputs,
+operations, outputs, and diagnostics. The specification is not tied to a
+particular programming language. It instead defines the mathematical contract
+that an implementation must satisfy. The \texttt{OrthoGMM} package is one
+software realization of this contract.
+
+The appendix has six objectives. First, it separates the statistical target
+from the numerical procedure used to compute it. Second, it identifies the
+unit-level moment contributions required for projection and covariance
+estimation. Third, it formalizes the tractable, demanding, derivative, and
+reconstruction operators supplied by a model. Fourth, it specifies the
+localization, projection, correction, and inference workflow. Fifth, it defines
+numerical safeguards and computational diagnostics. Finally, it shows how the
+Berry--Levinsohn--Pakes application instantiates the general specification.
+
+Throughout, the statistical definitions and efficiency results are those of
+Sections~\ref{sec:projection} and~\ref{sec:gmm}. The present appendix does not
+introduce an alternative estimator. It fixes a single feasible implementation
+of the projected efficient estimator and records the information required to
+reproduce it.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Computational Design Principles}
+\label{app:design_principles}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\paragraph{Separation of statistical and computational structure.}
+Let $\theta\in\Theta\subset\mathbb R^p$ denote the parameter of interest. The
+statistical model determines the valid estimating equations, the efficient
+influence function, and the asymptotic variance bound. The computational
+structure determines how these objects are evaluated. The specification keeps
+these layers distinct:
+\[
+\text{statistical model}
+\quad\longrightarrow\quad
+\text{estimating equations and efficiency target},
+\]
+whereas
+\[
+\text{computational implementation}
+\quad\longrightarrow\quad
+\text{operators, numerical tolerances, and evaluation costs}.
+\]
+Two implementations are therefore statistically equivalent when they evaluate
+the same estimating equations to the accuracy required by the theory, even if
+they use different numerical methods, programming languages, or hardware.
+
+\paragraph{Computational partition.}
+For each elementary statistical unit $i$, let
+\begin{equation}
+ m_i(\theta)
+ =
+ \begin{pmatrix}
+ g_i(\theta)\\
+ h_i(\theta)
+ \end{pmatrix},
+ \qquad
+ g_i(\theta)\in\mathbb R^{q_g},
+ \quad
+ h_i(\theta)\in\mathbb R^{q_h},
+ \label{eq:app_moment_partition}
+\end{equation}
+where $g_i$ is computationally tractable and $h_i$ is computationally
+demanding. The partition is defined by evaluation cost rather than statistical
+importance. Both components are valid estimating equations at the true
+parameter:
+\begin{equation}
+ E[g_i(\theta_0)]=0,
+ \qquad
+ E[h_i(\theta_0)]=0.
+ \label{eq:app_valid_moments}
+\end{equation}
+The tractable subsystem must be sufficiently informative to deliver a
+root-$n$ consistent localizer. The demanding subsystem contributes the
+incremental information required for full efficiency.
+
+\paragraph{Unit-level contributions.}
+Projection and covariance estimation require the collection
+$\{g_i(\theta),h_i(\theta)\}_{i=1}^n$, not only their sample averages. An
+implementation must therefore expose moment contributions at the elementary
+statistical unit. Depending on the application, this unit may be an
+observation, cluster, market, household, firm, panel unit, or another sampling
+block. The definition of the unit determines the covariance convention and
+must be fixed before estimation.
+
+\paragraph{Local use of demanding computation.}
+The demanding operator is not placed inside a global optimizer. It is evaluated
+only after the tractable subsystem has localized the parameter. The resulting
+workflow is
+\[
+\text{global tractable localization}
+\;\longrightarrow\;
+\text{local demanding evaluation}
+\;\longrightarrow\;
+\text{projected efficient correction}.
+\]
+This is the defining computational restriction of the implementation. A model
+may use several demanding evaluations to obtain derivatives or sensitivity
+checks, but those evaluations must remain local to the preliminary estimator.
+
+\paragraph{Reproducible numerical state.}
+Simulation-based and iterative models must make their numerical state explicit.
+This includes random seeds, simulation draws, quadrature nodes, contraction
+tolerances, solver tolerances, warm starts, and regularization parameters.
+Common random numbers should be used across nearby parameter evaluations unless
+a different design is explicitly justified. The numerical state forms part of
+the estimator specification because changing it can change finite-sample moment
+values and derivatives.
+
+\paragraph{Transparent computational accounting.}
+Wall-clock time alone is not an adequate measure of computational performance.
+An implementation must separately count tractable evaluations, demanding
+evaluations, derivative evaluations, inner-solver iterations, and final
+reconstruction calls. These operation-specific counts permit comparisons that
+remain meaningful across hardware and software environments.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Statistical Objects and Computational Operators}
+\label{app:statistical_objects_operators}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsubsection{Population projection objects}
+
+Suppressing evaluation at $\theta_0$ where no ambiguity arises, define
+\begin{align}
+ \Omega_{gg} &= E[g_i g_i'],
+ &
+ \Omega_{gh} &= E[g_i h_i'],
+ \nonumber\\
+ \Omega_{hg} &= E[h_i g_i'],
+ &
+ \Omega_{hh} &= E[h_i h_i'].
+ \label{eq:app_covariance_blocks}
+\end{align}
+The projection coefficient of the demanding moments on the tractable moments is
+\begin{equation}
+ B_0
+ =
+ \Omega_{hg}\Omega_{gg}^{-1}.
+ \label{eq:app_projection_coefficient}
+\end{equation}
+The orthogonal demanding residual is
+\begin{equation}
+ \nu_i
+ =
+ h_i-B_0g_i,
+ \qquad
+ E[\nu_i g_i']=0,
+ \label{eq:app_orthogonal_residual}
+\end{equation}
+and its covariance matrix is
+\begin{equation}
+ S_0
+ =
+ E[\nu_i\nu_i']
+ =
+ \Omega_{hh}
+ -
+ \Omega_{hg}\Omega_{gg}^{-1}\Omega_{gh}.
+ \label{eq:app_schur_complement}
+\end{equation}
+
+Let
+\begin{equation}
+ G_0
+ =
+ E\!\left[
+ \frac{\partial g_i(\theta_0)}{\partial\theta'}
+ \right],
+ \qquad
+ H_0
+ =
+ E\!\left[
+ \frac{\partial h_i(\theta_0)}{\partial\theta'}
+ \right].
+ \label{eq:app_jacobians}
+\end{equation}
+The projected demanding Jacobian is
+\begin{equation}
+ R_0
+ =
+ H_0-B_0G_0.
+ \label{eq:app_projected_jacobian}
+\end{equation}
+The projected information matrix is
+\begin{equation}
+ J_0
+ =
+ G_0'\Omega_{gg}^{-1}G_0
+ +
+ R_0'S_0^{-1}R_0.
+ \label{eq:app_information_matrix}
+\end{equation}
+Under the conditions of Section~\ref{sec:gmm}, this matrix is algebraically
+equivalent to the efficient GMM information matrix based on the full moment
+vector.
+
+\subsubsection{Feasible sample objects}
+
+Let $\widetilde\theta$ denote the tractable preliminary estimator. Define the
+unit-level evaluations
+\[
+ \widetilde g_i=g_i(\widetilde\theta),
+ \qquad
+ \widetilde h_i=h_i(\widetilde\theta),
+\]
+and the corresponding sample averages
+\[
+ \overline g
+ =
+ \frac{1}{n}\sum_{i=1}^n\widetilde g_i,
+ \qquad
+ \overline h
+ =
+ \frac{1}{n}\sum_{i=1}^n\widetilde h_i.
+\]
+For independent elementary units, the baseline covariance estimators are
+\begin{align}
+ \widehat\Omega_{gg}
+ &=
+ \frac{1}{n}\sum_{i=1}^n
+ (\widetilde g_i-\overline g)
+ (\widetilde g_i-\overline g)',
+ \label{eq:app_sample_omega_gg}\\
+ \widehat\Omega_{hg}
+ &=
+ \frac{1}{n}\sum_{i=1}^n
+ (\widetilde h_i-\overline h)
+ (\widetilde g_i-\overline g)',
+ \label{eq:app_sample_omega_hg}\\
+ \widehat\Omega_{hh}
+ &=
+ \frac{1}{n}\sum_{i=1}^n
+ (\widetilde h_i-\overline h)
+ (\widetilde h_i-\overline h)'.
+ \label{eq:app_sample_omega_hh}
+\end{align}
+When observations are dependent within clusters, these expressions are replaced
+by covariance estimators based on cluster-level sums. HAC or spatial covariance
+estimators may be used when required by the sampling design. The covariance
+convention must be applied consistently to all blocks.
+
+The feasible projection coefficient and residuals are
+\begin{equation}
+ \widehat B
+ =
+ \widehat\Omega_{hg}
+ \widehat\Omega_{gg}^{-1},
+ \qquad
+ \widehat\nu_i
+ =
+ \widetilde h_i-
+ \widehat B\widetilde g_i.
+ \label{eq:app_feasible_projection}
+\end{equation}
+Their covariance is estimated by
+\begin{equation}
+ \widehat S
+ =
+ \frac{1}{n}\sum_{i=1}^n
+ (\widehat\nu_i-\overline\nu)
+ (\widehat\nu_i-\overline\nu)',
+ \qquad
+ \overline\nu
+ =
+ \frac{1}{n}\sum_{i=1}^n\widehat\nu_i.
+ \label{eq:app_feasible_S}
+\end{equation}
+Let $\widehat G$ and $\widehat H$ denote feasible estimates of the two
+Jacobians at $\widetilde\theta$. Then
+\begin{equation}
+ \widehat R
+ =
+ \widehat H-
+ \widehat B\widehat G,
+ \qquad
+ \widehat J
+ =
+ \widehat G'\widehat\Omega_{gg}^{-1}\widehat G
+ +
+ \widehat R'\widehat S^{-1}\widehat R.
+ \label{eq:app_feasible_R_J}
+\end{equation}
+The feasible projected score is
+\begin{equation}
+ \widehat\psi_n
+ =
+ \widehat G'\widehat\Omega_{gg}^{-1}\overline g
+ +
+ \widehat R'\widehat S^{-1}\overline\nu,
+ \label{eq:app_projected_score}
+\end{equation}
+where $\overline\nu=n^{-1}\sum_i\widehat\nu_i$. The canonical one-step
+estimator implemented by the package is
+\begin{equation}
+ \widehat\theta_{\mathrm{SEIP}}
+ =
+ \widetilde\theta
+ -
+ \widehat J^{-1}\widehat\psi_n.
+ \label{eq:app_seip_estimator}
+\end{equation}
+A damped version may be used for finite-sample numerical stability:
+\begin{equation}
+ \widehat\theta_{\mathrm{SEIP}}(\alpha)
+ =
+ \widetilde\theta
+ -
+ \alpha\widehat J^{-1}\widehat\psi_n,
+ \qquad
+ \alpha\in(0,1].
+ \label{eq:app_damped_update}
+\end{equation}
+The undamped update $\alpha=1$ is the default. Any departure from it must be
+reported.
+
+\subsubsection{Computational operators}
+
+A model implementation supplies the following four operators.
+
+\paragraph{Tractable moment operator.}
+The operator
+\begin{equation}
+ \mathcal G:
+ \Theta\times\mathcal Z
+ \longrightarrow
+ \mathbb R^{n\times q_g}
+ \label{eq:app_G_operator}
+\end{equation}
+maps a parameter value and fixed numerical state $\mathcal Z$ into the matrix
+whose $i$th row is $g_i(\theta)'$. It must support repeated global evaluation
+and return unit-level contributions in a stable order.
+
+\paragraph{Demanding moment operator.}
+The operator
+\begin{equation}
+ \mathcal H:
+ \Theta\times\mathcal Z
+ \longrightarrow
+ \mathbb R^{n\times q_h}
+ \label{eq:app_H_operator}
+\end{equation}
+returns the matrix whose $i$th row is $h_i(\theta)'$. Evaluation may invoke
+simulation, integration, fixed-point iteration, equilibrium solution, or nested
+optimization. It must also return sufficient metadata to account for the
+numerical work performed.
+
+\paragraph{Derivative operator.}
+The operator
+\begin{equation}
+ \mathcal D:
+ \Theta\times\mathcal Z
+ \longrightarrow
+ \mathbb R^{q_g\times p}
+ \times
+ \mathbb R^{q_h\times p}
+ \label{eq:app_D_operator}
+\end{equation}
+returns estimates of $G(\theta)$ and $H(\theta)$. The implementation must
+record whether derivatives are analytical, obtained by automatic
+differentiation, or approximated numerically. If numerical derivatives are
+used, the step rule and any parameter scaling must be stored with the results.
+
+\paragraph{Reconstruction operator.}
+The operator
+\begin{equation}
+ \mathcal R:
+ \Theta\times\mathcal Z
+ \longrightarrow
+ \mathcal Q
+ \label{eq:app_R_operator}
+\end{equation}
+constructs model-specific quantities $\mathcal Q$ at the final estimator.
+Examples include latent variables, elasticities, marginal effects,
+counterfactual equilibria, welfare measures, or efficiency scores. The
+reconstruction operator is not part of the estimating correction unless the
+requested quantity is itself required to evaluate the moments. Its calls are
+therefore counted separately.
+
+\paragraph{Operator output contract.}
+Each moment operator must return at least
+\begin{enumerate}
+ \item the unit-level moment matrix;
+ \item the aggregate sample moment;
+ \item dimensions and unit identifiers;
+ \item success or failure status;
+ \item numerical tolerances actually achieved;
+ \item operation counts and elapsed time; and
+ \item the numerical state required to reproduce the evaluation.
+\end{enumerate}
+A failed inner solution must never be silently treated as a valid moment
+evaluation.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Computational Workflow}
+\label{app:computational_workflow}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+The canonical implementation contains six stages. The stages are fixed even
+when model-specific numerical methods differ.
+
+\subsubsection{Stage 1: tractable localization}
+
+Construct $\widetilde\theta$ using only the tractable subsystem. For example,
+with a positive definite tractable weighting matrix $W_g$,
+\begin{equation}
+ \widetilde\theta
+ =
+ \arg\min_{\theta\in\Theta}
+ \overline g_n(\theta)'W_g\overline g_n(\theta),
+ \qquad
+ \overline g_n(\theta)
+ =
+ \frac{1}{n}\sum_{i=1}^n g_i(\theta).
+ \label{eq:app_localizer}
+\end{equation}
+The optimization method, parameter bounds, initial values, convergence
+criterion, and attained criterion value must be retained. The package should
+not proceed automatically when localization fails or returns a parameter on an
+unintended boundary.
+
+\subsubsection{Stage 2: local demanding evaluation}
+
+Evaluate $\mathcal H$ at $\widetilde\theta$. When $\widehat H$ is obtained by
+finite differences, additional evaluations are made at local perturbations
+\[
+ \widetilde\theta\pm\delta_j e_j,
+ \qquad j=1,\ldots,p.
+\]
+All such perturbations must remain inside the admissible parameter space. The
+same simulation draws or quadrature nodes should be used across perturbations
+unless the user explicitly selects independent numerical states.
+
+\subsubsection{Stage 3: projection construction}
+
+Using unit-level outputs from $\mathcal G$ and $\mathcal H$, estimate
+$\widehat\Omega_{gg}$, $\widehat\Omega_{hg}$, $\widehat B$, and
+$\widehat S$. Compute the orthogonality residual
+\begin{equation}
+ \widehat\Delta_{g\nu}
+ =
+ \frac{1}{n}\sum_{i=1}^n
+ (\widetilde g_i-\overline g)
+ (\widehat\nu_i-\overline\nu)'.
+ \label{eq:app_orthogonality_residual}
+\end{equation}
+The norm of this matrix is a required diagnostic. Large values indicate an
+inconsistent unit definition, covariance convention, numerical failure, or
+insufficient regularization accuracy.
+
+\subsubsection{Stage 4: projected efficient correction}
+
+Estimate $\widehat G$, $\widehat H$, $\widehat R$, and $\widehat J$, then
+compute~\eqref{eq:app_projected_score} and~\eqref{eq:app_seip_estimator}. Linear
+systems should be solved directly rather than by explicitly forming matrix
+inverses whenever practical. The implementation must retain the update vector
+\begin{equation}
+ \widehat d
+ =
+ -\widehat J^{-1}\widehat\psi_n
+ \label{eq:app_update_vector}
+\end{equation}
+and its scaled norm. A large update relative to the scale of
+$\widetilde\theta$ is evidence that the tractable localizer or the selected
+computational partition is inadequate.
+
+\subsubsection{Stage 5: inference}
+
+Under efficient weighting and the conditions of Section~\ref{sec:gmm}, the
+baseline covariance estimator is
+\begin{equation}
+ \widehat{\operatorname{Var}}
+ (\widehat\theta_{\mathrm{SEIP}})
+ =
+ \frac{1}{n}\widehat J^{-1}.
+ \label{eq:app_variance_estimator}
+\end{equation}
+When non-efficient weights, clustered covariance estimators, or estimated
+numerical approximations require a sandwich form, the implementation must use
+the corresponding influence-function covariance rather than
+mechanically applying~\eqref{eq:app_variance_estimator}. Standard errors,
+confidence intervals, and covariance matrices must all identify the covariance
+convention used.
+
+\subsubsection{Stage 6: final reconstruction}
+
+Evaluate $\mathcal R$ at $\widehat\theta_{\mathrm{SEIP}}$. When a high-fidelity
+reconstruction is requested, it is counted separately from the demanding
+evaluations used in projection and differentiation. This distinction prevents
+the cost of reporting economic quantities from being conflated with the cost of
+estimation.
+
+\subsubsection{Canonical pseudocode}
+
+The complete workflow is summarized by the following implementation-independent
+pseudocode.
+
+\begin{enumerate}
+ \item Fix the data, elementary statistical unit, covariance convention, and
+ numerical state $\mathcal Z$.
+ \item Obtain $\widetilde\theta$ by optimizing the tractable criterion.
+ \item Evaluate unit-level tractable and demanding moments at
+ $\widetilde\theta$.
+ \item Evaluate or approximate the two Jacobians locally.
+ \item Estimate covariance blocks, the projection coefficient, orthogonal
+ residuals, the residual covariance, and the projected Jacobian.
+ \item Form the projected score and solve for the one-step correction.
+ \item Compute inference using the selected covariance convention.
+ \item Reconstruct requested structural quantities at the final estimator.
+ \item Return estimates, inference, diagnostics, numerical state, and complete
+ evaluation counts.
+\end{enumerate}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Numerical Specification and Diagnostics}
+\label{app:numerical_specification}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\subsubsection{Derivative evaluation}
+
+Analytical derivatives are preferred when available. Automatic differentiation
+is appropriate when the underlying numerical routine is differentiable and the
+resulting derivatives have been validated. Otherwise, central differences are
+the default:
+\begin{equation}
+ \frac{\partial \overline h_n(\theta)}{\partial\theta_j}
+ \approx
+ \frac{
+ \overline h_n(\theta+\delta_j e_j)
+ -
+ \overline h_n(\theta-\delta_j e_j)
+ }{2\delta_j}.
+ \label{eq:app_central_difference}
+\end{equation}
+A scale-aware step may be defined by
+\begin{equation}
+ \delta_j
+ =
+ \epsilon^{1/3}
+ \max\{1,|\theta_j|\}
+ s_j,
+ \label{eq:app_fd_step}
+\end{equation}
+where $\epsilon$ is machine precision and $s_j$ is an optional user-supplied
+scale. One-sided differences are used near boundaries. The implementation
+should support derivative checks based on alternative step sizes and report
+relative discrepancies.
+
+\subsubsection{Regularization}
+
+If $\widehat\Omega_{gg}$, $\widehat S$, or $\widehat J$ is ill-conditioned,
+a regularized matrix may be used:
+\begin{equation}
+ A_{\lambda}
+ =
+ A+\lambda I,
+ \qquad \lambda\geq0.
+ \label{eq:app_ridge_regularization}
+\end{equation}
+Alternatively, an eigenvalue floor may replace eigenvalues below
+$\lambda_{\min}$. The regularization method, threshold, pre- and
+post-regularization condition numbers, and effective numerical rank must be
+reported. Regularization should be applied to the smallest set of matrices
+needed to obtain a stable solution and should not be hidden inside generic
+linear-algebra calls.
+
+\subsubsection{Centering and scaling}
+
+Moment centering must be identical across covariance blocks. Parameter and
+moment scaling may improve numerical conditioning, but the transformation must
+be invertible and recorded. Let $A_g$ and $A_h$ be nonsingular scaling
+matrices. If transformed moments
+\[
+ g_i^*=A_gg_i,
+ \qquad
+ h_i^*=A_hh_i
+\]
+are used, the same transformations must be applied to covariance blocks,
+Jacobians, projection coefficients, and diagnostics. Reported estimates and
+standard errors are returned on the original parameter scale.
+
+\subsubsection{Inner numerical solvers}
+
+A demanding evaluation may itself contain a contraction mapping, simulation,
+integration routine, or equilibrium solver. Each inner solver must return
+\begin{enumerate}
+ \item a convergence flag;
+ \item the attained residual or tolerance;
+ \item the number of iterations or function calls;
+ \item whether a warm start was used; and
+ \item any clipping, truncation, or fallback rule invoked.
+\end{enumerate}
+Moment evaluations based on unconverged inner solutions must be marked invalid.
+The package may permit user-authorized fallback rules, but such rules must be
+visible in the result object.
+
+\subsubsection{Required statistical diagnostics}
+
+The result object must report at least
+\begin{align*}
+ &\|\overline g(\widetilde\theta)\|,
+ \qquad
+ \|\overline h(\widetilde\theta)\|,
+ \qquad
+ \|\overline\nu\|,\\
+ &\|\widehat\Delta_{g\nu}\|,
+ \qquad
+ \|\widehat d\|,
+ \qquad
+ \frac{\|\widehat d\|}{1+\|\widetilde\theta\|},\\
+ &\kappa(\widehat\Omega_{gg}),
+ \qquad
+ \kappa(\widehat S),
+ \qquad
+ \kappa(\widehat J),
+\end{align*}
+where $\kappa(\cdot)$ denotes a reported condition-number convention. It should
+also report effective ranks, regularization levels, and whether the final update
+satisfies parameter constraints.
+
+\subsubsection{Required computational diagnostics}
+
+Evaluation accounting must distinguish
+\begin{enumerate}
+ \item tractable objective evaluations;
+ \item tractable moment evaluations;
+ \item demanding moment evaluations used for projection;
+ \item demanding evaluations used for derivatives;
+ \item tractable and demanding Jacobian evaluations;
+ \item failed or rejected evaluations;
+ \item inner-solver calls and iterations;
+ \item final reconstruction evaluations; and
+ \item elapsed time by computational stage.
+\end{enumerate}
+Let $N_H^{\mathrm{proj}}$, $N_H^{\mathrm{deriv}}$, and
+$N_H^{\mathrm{recon}}$ denote the demanding evaluations used for projection,
+derivatives, and reconstruction. The total is
+\begin{equation}
+ N_H^{\mathrm{total}}
+ =
+ N_H^{\mathrm{proj}}
+ +N_H^{\mathrm{deriv}}
+ +N_H^{\mathrm{recon}}.
+ \label{eq:app_total_demanding_evals}
+\end{equation}
+These components must remain separately available even when a summary table
+reports only their total.
+
+\subsubsection{Warnings and validity checks}
+
+An implementation should issue explicit warnings when
+\begin{enumerate}
+ \item localization fails or terminates on a parameter boundary;
+ \item any moment or derivative contains a non-finite value;
+ \item a demanding inner solver fails to converge;
+ \item covariance blocks have deficient numerical rank;
+ \item the orthogonality residual exceeds a user-defined tolerance;
+ \item the one-step correction is large relative to the preliminary estimate;
+ \item substantial regularization is required; or
+ \item inference is requested under a covariance convention inconsistent with
+ the supplied elementary unit.
+\end{enumerate}
+Warnings should not automatically invalidate an estimate, but they must remain
+attached to the returned result.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Software Architecture}
+\label{app:software_architecture}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+The specification implies a modular software design with four layers.
+
+\paragraph{Model layer.}
+The model layer owns the data, parameter transformation, moment operators,
+derivative routines, reconstruction routines, and model-specific numerical
+state. It does not construct the generic projection estimator.
+
+\paragraph{Estimation layer.}
+The estimation layer performs tractable localization, requests local demanding
+evaluations, constructs projection objects, computes the one-step update, and
+forms inference. It depends only on the operator contract and is therefore
+reusable across models.
+
+\paragraph{Numerical layer.}
+The numerical layer provides optimization, differentiation, linear algebra,
+regularization, parallel execution, caching, and reproducible random-number
+management. Numerical services should not alter the mathematical definition of
+the moment operators.
+
+\paragraph{Results layer.}
+The results layer stores estimates, covariance matrices, moment values,
+projection objects, Jacobians, numerical state, operation counts, timing,
+warnings, and reconstructed economic quantities. A result must contain enough
+information to reproduce the one-step update without rerunning the global
+localization stage.
+
+\paragraph{Minimal model contract.}
+In software-neutral notation, a compatible model supplies
+\begin{verbatim}
+tractable_moments(theta)   -> unit-by-q_g array
+ demanding_moments(theta) -> unit-by-q_h array
+tractable_jacobian(theta)  -> q_g-by-p array
+ demanding_jacobian(theta)-> q_h-by-p array
+reconstruct(theta)         -> model-specific output
+\end{verbatim}
+together with unit identifiers, parameter bounds or transformations, and a
+numerical-state object. Analytical Jacobian methods may be omitted when the
+estimation layer is authorized to construct numerical derivatives.
+
+\paragraph{Caching and state consistency.}
+A cache key must include the parameter vector, fidelity level, numerical state,
+and any tolerance affecting the returned value. Reusing a cached demanding
+evaluation under a different simulation draw set, contraction tolerance, or
+fidelity level is invalid. Cache hits and misses should be counted because
+caching can materially affect runtime comparisons.
+
+\paragraph{Extensibility.}
+The generic estimator must not contain model-specific references to BLP,
+stochastic frontier models, mixed logit, or any other application. Extensions
+are introduced by implementing the operator contract. This makes the package a
+realization of the computational specification rather than a collection of
+unrelated model-specific estimators.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Specialization to Random-Coefficient Demand}
+\label{app:blp_specialization}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+The BLP application instantiates the computational partition through
+low- and high-fidelity versions of the same structural demand operator. Let
+$m_t^{L}(\theta)$ and $m_t^{H}(\theta)$ denote market-level moment contributions
+constructed using low- and high-fidelity numerical settings. The elementary
+statistical unit is the market $t=1,\ldots,T$. The computational partition is
+\begin{equation}
+ g_t(\theta)
+ =
+ m_t^{L}(\theta),
+ \qquad
+ h_t(\theta)
+ =
+ m_t^{H}(\theta)-m_t^{L}(\theta).
+ \label{eq:app_blp_partition}
+\end{equation}
+Thus the complete high-fidelity moment is recovered as
+\begin{equation}
+ m_t^{H}(\theta)
+ =
+ g_t(\theta)+h_t(\theta).
+ \label{eq:app_blp_recovery}
+\end{equation}
+The low-fidelity operator is a localization device, not an alternative economic
+model. Both fidelity levels use the same structural parameterization,
+instruments, product data, market definition, and economic target. They differ
+only in numerical accuracy or computational intensity.
+
+\subsubsection{BLP operator contract}
+
+The model-specific implementation supplies the following operations.
+
+\paragraph{Share inversion.}
+Given $\theta$ and a fidelity level $f\in\{L,H\}$, the inversion operator
+returns mean utilities
+\begin{equation}
+ \delta^{f}(\theta)
+ =
+ \mathcal I(\theta;f),
+ \label{eq:app_blp_inversion}
+\end{equation}
+together with contraction residuals, iteration counts, convergence status, and
+warm-start information.
+
+\paragraph{Moment construction.}
+The moment operator maps the inverted mean utilities into market-level moments,
+\begin{equation}
+ m_t^{f}(\theta)
+ =
+ \mathcal M_t(\delta^{f}(\theta),\theta;f).
+ \label{eq:app_blp_moments}
+\end{equation}
+The returned object must preserve market-level contributions rather than only
+the aggregate instrument--error product.
+
+\paragraph{Derivative construction.}
+The derivative operator returns
+\begin{equation}
+ G(\theta)
+ =
+ \frac{\partial \overline m^{L}(\theta)}{\partial\theta'},
+ \qquad
+ H(\theta)
+ =
+ \frac{\partial
+ [\overline m^{H}(\theta)-\overline m^{L}(\theta)]
+ }{\partial\theta'}.
+ \label{eq:app_blp_derivatives}
+\end{equation}
+Analytical derivatives, implicit derivatives of the share inversion, automatic
+differentiation, or common-random-number finite differences may be used. The
+method and fidelity-specific numerical settings must be reported.
+
+\paragraph{Reconstruction.}
+At the final estimate, a high-fidelity reconstruction may compute mean utilities,
+linear parameters, marginal costs, elasticities, diversion ratios,
+markups, or counterfactual outcomes. These calls are recorded as reconstruction
+rather than projection evaluations.
+
+\subsubsection{Fidelity specification}
+
+A fidelity level is a complete numerical configuration. It may differ in
+\begin{enumerate}
+ \item the number of simulation draws;
+ \item integration or quadrature rules;
+ \item contraction tolerance and maximum iterations;
+ \item acceleration method;
+ \item derivative accuracy;
+ \item fixed-point initialization; or
+ \item the accuracy of an inner supply-side or equilibrium calculation.
+\end{enumerate}
+For a valid comparison, all features not intended to define fidelity must be
+held fixed. In particular, the same data, instruments, objective scaling,
+parameter transformations, and random-number design should be used across the
+two operators.
+
+\subsubsection{BLP evaluation accounting}
+
+For each fidelity level, the implementation records
+\begin{enumerate}
+ \item calls to simulated-share evaluation;
+ \item contraction calls and total contraction iterations;
+ \item Jacobian calls;
+ \item objective and gradient evaluations;
+ \item failed contractions or clipped shares;
+ \item simulation draws and random seed;
+ \item time spent in simulation, contraction, differentiation, linear
+ concentration, and matrix operations; and
+ \item final high-fidelity reconstruction calls.
+\end{enumerate}
+Let $N_H^{\mathrm{GMM}}$ denote the number of high-fidelity evaluations used by
+conventional full GMM and $N_H^{\mathrm{SEIP}}$ the corresponding number used by
+the projected estimator. The structural evaluation ratio is
+\begin{equation}
+ \mathcal R_H
+ =
+ \frac{N_H^{\mathrm{SEIP}}}
+ {N_H^{\mathrm{GMM}}}.
+ \label{eq:app_blp_evaluation_ratio}
+\end{equation}
+Runtime comparisons should be accompanied by $\mathcal R_H$ and the underlying
+operation counts. This separates the structural computational gain from
+hardware, parallelization, and implementation overhead.
+
+\subsubsection{BLP validity diagnostics}
+
+The BLP specialization should report
+\begin{enumerate}
+ \item the high- and low-fidelity moment difference at
+ $\widetilde\theta$;
+ \item the norm of the projected high-fidelity correction;
+ \item derivative agreement across alternative local step sizes;
+ \item contraction convergence at every demanding evaluation;
+ \item sensitivity to the low- and high-fidelity definitions;
+ \item parameter and standard-error differences relative to full
+ high-fidelity GMM; and
+ \item differences in reconstructed economic quantities.
+\end{enumerate}
+A large, unstable, or fidelity-sensitive correction is evidence against the
+chosen low-fidelity operator as an adequate localizer. The package should expose
+this evidence rather than treating successful numerical termination as
+automatic validation of the approximation.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\subsection{Mapping to the \texttt{OrthoGMM} Package}
+\label{app:orthogmm_mapping}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+The package should preserve a one-to-one mapping between the mathematical
+objects in this appendix and stored software objects. At minimum, the mapping is
+\begin{center}
+\begin{tabular}{ll}
+\hline
+Mathematical object & Package role \\
+\hline
+$g_i(\theta)$ & unit-level tractable moments \\
+$h_i(\theta)$ & unit-level demanding moments \\
+$\mathcal G$ & tractable moment operator \\
+$\mathcal H$ & demanding moment operator \\
+$\mathcal D$ & derivative provider \\
+$\mathcal R$ & reconstruction provider \\
+$\widetilde\theta$ & tractable localizer \\
+$\widehat\Omega_{gg},\widehat\Omega_{hg}$ & covariance blocks \\
+$\widehat B$ & projection coefficient \\
+$\widehat\nu_i$ & orthogonal demanding residuals \\
+$\widehat S$ & residual covariance \\
+$\widehat G,\widehat H,\widehat R$ & Jacobian objects \\
+$\widehat J$ & projected information matrix \\
+$\widehat d$ & efficient one-step correction \\
+$\widehat\theta_{\mathrm{SEIP}}$ & final estimator \\
+$n^{-1}\widehat J^{-1}$ & baseline covariance estimate \\
+\hline
+\end{tabular}
+\end{center}
+
+A serialized result should contain these objects whenever their dimensions make
+storage practical. For large unit-level arrays, the result may instead retain a
+reproducible reference to cached data together with checksums or equivalent
+integrity information.
+
+The package should expose separate estimator classes or modes for tractable GMM,
+full GMM, and projected GMM, but all should share the same model object and
+numerical-state conventions. This permits direct comparisons in which data,
+instruments, moment scaling, parameter transformations, and simulation draws are
+held fixed. Reported differences can then be attributed to the computational
+route rather than inconsistent model implementations.
+
+Finally, the package documentation and empirical scripts should identify this
+appendix as the authoritative estimator specification. Software behavior that
+departs from the equations or workflow stated here should be documented as an
+extension, approximation, or experimental option rather than silently treated
+as the canonical estimator.
