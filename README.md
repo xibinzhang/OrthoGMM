@@ -53,3 +53,33 @@ from orthogmm import fit_tractable_gmm, fit_full_gmm, fit_seip
 ```
 
 The result object stores estimates, covariance matrices, projection objects, Jacobians, condition numbers, orthogonality diagnostics, evaluation counts, warnings, and optional reconstruction output.
+
+## Development architecture (v0.2)
+
+The package is being refactored to mirror the revised paper:
+
+- `orthogmm.model`: model contracts and application-specific operators;
+- `orthogmm.operators`: model-independent projection objects;
+- `orthogmm.estimators`: tractable, full, and Sequential Oracle Projection estimators;
+- `orthogmm.diagnostics`: computational accounting and numerical diagnostics.
+
+The original functional interface remains available. The equivalent class interface is:
+
+```python
+from orthogmm import SOPEstimator
+
+result = SOPEstimator().fit(model, theta0)
+print(result.summary())
+```
+
+The standalone projection layer can also be used directly:
+
+```python
+from orthogmm import OrthogonalProjection
+
+projection = OrthogonalProjection().fit(g, h, G, H)
+B = projection.coefficient
+S = projection.residual_covariance
+R = projection.residualized_jacobian
+J = projection.information
+```

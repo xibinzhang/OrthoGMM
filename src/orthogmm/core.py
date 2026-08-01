@@ -72,12 +72,15 @@ def _jacobian(
 ) -> Array:
     method = getattr(model, method_name, None)
     if callable(method):
-        if demanding:
-            counts.demanding_jacobian += 1
-        else:
-            counts.tractable_jacobian += 1
-        jac = np.asarray(method(theta), dtype=float)
-    else:
+        try:
+            if demanding:
+                counts.demanding_jacobian += 1
+            else:
+                counts.tractable_jacobian += 1
+            jac = np.asarray(method(theta), dtype=float)
+        except NotImplementedError:
+            method = None
+    if not callable(method):
         def mean_fn(x: Array) -> Array:
             if demanding:
                 counts.demanding_moments_derivative += 1

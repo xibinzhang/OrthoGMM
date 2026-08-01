@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orthogmm"
-version = "0.1.0"
-description = "Orthogonal projection GMM under computational heterogeneity"
+version = "0.2.0.dev0"
+description = "Efficient GMM and Sequential Oracle Projection under computational heterogeneity"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
