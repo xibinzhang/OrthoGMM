@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.stats import norm
 
 
 FloatArray = NDArray[np.float64]
@@ -23,6 +24,7 @@ class ReplicationResult:
     replication: int
     estimator: str
     seed: int
+    true_parameter: FloatArray
     estimate: FloatArray
     standard_errors: FloatArray | None
     runtime_seconds: float
@@ -30,6 +32,26 @@ class ReplicationResult:
     demanding_evaluations: int | None
     success: bool
     error: str | None = None
+
+
+@dataclass(frozen=True)
+class ParameterSummary:
+    """Monte Carlo summary for one estimator and one parameter."""
+
+    estimator: str
+    parameter_index: int
+    true_value: float
+    repetitions: int
+    successes: int
+    success_rate: float
+    bias: float
+    rmse: float
+    empirical_sd: float
+    mean_standard_error: float | None
+    coverage: float | None
+    mean_runtime_seconds: float
+    mean_objective_evaluations: float | None
+    mean_demanding_evaluations: float | None
 
 
 @dataclass
@@ -62,6 +84,212 @@ class ExperimentResults:
         """Number of failed estimator runs."""
 
         return len(self.failed())
+
+    @property
+    def estimator_names(self) -> tuple[str, ...]:
+        """Estimator names in first-appearance order."""
+
+        return tuple(dict.fromkeys(record.estimator for record in self.records))
+
+    def summarize(
+        self,
+        *,
+        confidence_level: float = 0.95,
+    ) -> list[ParameterSummary]:
+        """Compute Monte Carlo summaries by estimator and parameter.
+
+        The summaries include bias, RMSE, empirical standard deviation,
+        mean estimated standard error, confidence-interval coverage,
+        success rate, runtime, and computational evaluation counts.
+        """
+
+        if not 0.0 < confidence_level < 1.0:
+            raise ValueError("confidence_level must lie in (0, 1).")
+
+        critical_value = float(
+            norm.ppf(0.5 + confidence_level / 2.0)
+        )
+        summaries: list[ParameterSummary] = []
+
+        for estimator_name in self.estimator_names:
+            estimator_records = self.by_estimator(estimator_name)
+
+            if not estimator_records:
+                continue
+
+            successful_records = [
+                record for record in estimator_records if record.success
+            ]
+
+            parameter_dimension = self._parameter_dimension(
+                estimator_records
+            )
+
+            for parameter_index in range(parameter_dimension):
+                true_value = self._true_value(
+                    estimator_records,
+                    parameter_index,
+                )
+
+                if successful_records:
+                    estimates = np.asarray(
+                        [
+                            record.estimate[parameter_index]
+                            for record in successful_records
+                        ],
+                        dtype=float,
+                    )
+                    errors = estimates - true_value
+                    bias = float(np.mean(errors))
+                    rmse = float(np.sqrt(np.mean(errors**2)))
+                    empirical_sd = float(
+                        np.std(estimates, ddof=1)
+                        if estimates.size > 1
+                        else 0.0
+                    )
+                    mean_runtime = float(
+                        np.mean(
+                            [
+                                record.runtime_seconds
+                                for record in successful_records
+                            ]
+                        )
+                    )
+                else:
+                    bias = float("nan")
+                    rmse = float("nan")
+                    empirical_sd = float("nan")
+                    mean_runtime = float("nan")
+
+                standard_error_values = [
+                    float(record.standard_errors[parameter_index])
+                    for record in successful_records
+                    if (
+                        record.standard_errors is not None
+                        and record.standard_errors.size > parameter_index
+                        and np.isfinite(
+                            record.standard_errors[parameter_index]
+                        )
+                    )
+                ]
+
+                if standard_error_values:
+                    mean_standard_error: float | None = float(
+                        np.mean(standard_error_values)
+                    )
+
+                    covered = []
+                    for record in successful_records:
+                        if (
+                            record.standard_errors is None
+                            or record.standard_errors.size <= parameter_index
+                        ):
+                            continue
+
+                        standard_error = float(
+                            record.standard_errors[parameter_index]
+                        )
+                        estimate = float(
+                            record.estimate[parameter_index]
+                        )
+
+                        if not (
+                            np.isfinite(standard_error)
+                            and np.isfinite(estimate)
+                        ):
+                            continue
+
+                        lower = estimate - critical_value * standard_error
+                        upper = estimate + critical_value * standard_error
+                        covered.append(lower <= true_value <= upper)
+
+                    coverage: float | None = (
+                        float(np.mean(covered)) if covered else None
+                    )
+                else:
+                    mean_standard_error = None
+                    coverage = None
+
+                objective_counts = [
+                    record.objective_evaluations
+                    for record in successful_records
+                    if record.objective_evaluations is not None
+                ]
+                demanding_counts = [
+                    record.demanding_evaluations
+                    for record in successful_records
+                    if record.demanding_evaluations is not None
+                ]
+
+                summaries.append(
+                    ParameterSummary(
+                        estimator=estimator_name,
+                        parameter_index=parameter_index,
+                        true_value=true_value,
+                        repetitions=len(estimator_records),
+                        successes=len(successful_records),
+                        success_rate=(
+                            len(successful_records)
+                            / len(estimator_records)
+                        ),
+                        bias=bias,
+                        rmse=rmse,
+                        empirical_sd=empirical_sd,
+                        mean_standard_error=mean_standard_error,
+                        coverage=coverage,
+                        mean_runtime_seconds=mean_runtime,
+                        mean_objective_evaluations=(
+                            float(np.mean(objective_counts))
+                            if objective_counts
+                            else None
+                        ),
+                        mean_demanding_evaluations=(
+                            float(np.mean(demanding_counts))
+                            if demanding_counts
+                            else None
+                        ),
+                    )
+                )
+
+        return summaries
+
+    @staticmethod
+    def _parameter_dimension(
+        records: list[ReplicationResult],
+    ) -> int:
+        for record in records:
+            if record.true_parameter.size:
+                return int(record.true_parameter.size)
+
+        raise ValueError(
+            "Cannot determine the parameter dimension because "
+            "no true parameter vector was recorded."
+        )
+
+    @staticmethod
+    def _true_value(
+        records: list[ReplicationResult],
+        parameter_index: int,
+    ) -> float:
+        values = {
+            float(record.true_parameter[parameter_index])
+            for record in records
+            if record.true_parameter.size > parameter_index
+        }
+
+        if not values:
+            raise ValueError(
+                "No true parameter value is available for "
+                f"parameter {parameter_index}."
+            )
+
+        if len(values) != 1:
+            raise ValueError(
+                "True parameter values differ across replications "
+                f"for parameter {parameter_index}."
+            )
+
+        return values.pop()
 
 
 @dataclass
@@ -117,10 +345,14 @@ class Experiment:
 
         for replication, child_sequence in enumerate(child_sequences):
             replication_seed = int(
-                child_sequence.generate_state(1, dtype=np.uint32)[0]
+                child_sequence.generate_state(
+                    1,
+                    dtype=np.uint32,
+                )[0]
             )
 
             data = self.design.generate(seed=replication_seed)
+            true_parameter = self._extract_true_parameter(data)
 
             for estimator_name, runner in self.estimators.items():
                 record = self._run_estimator(
@@ -129,6 +361,7 @@ class Experiment:
                     estimator_name=estimator_name,
                     runner=runner,
                     data=data,
+                    true_parameter=true_parameter,
                 )
                 results.records.append(record)
 
@@ -148,6 +381,7 @@ class Experiment:
         estimator_name: str,
         runner: EstimatorRunner,
         data: Mapping[str, Any],
+        true_parameter: FloatArray,
     ) -> ReplicationResult:
         """Run one estimator and standardise its output."""
 
@@ -169,33 +403,60 @@ class Experiment:
                 required=False,
             )
 
-            objective_evaluations = Experiment._extract_integer(
+            if estimate.size != true_parameter.size:
+                raise ValueError(
+                    "Estimated and true parameter vectors must "
+                    "have the same dimension."
+                )
+
+            if (
+                standard_errors is not None
+                and standard_errors.size != estimate.size
+            ):
+                raise ValueError(
+                    "standard_errors must have the same dimension "
+                    "as the estimate."
+                )
+
+            objective_evaluations = Experiment._extract_count(
                 result,
-                names=(
+                top_level_names=(
                     "objective_evaluations",
                     "n_objective_evaluations",
                     "nfev",
                 ),
+                nested_name="tractable_objective",
             )
 
-            demanding_evaluations = Experiment._extract_integer(
+            demanding_evaluations = Experiment._extract_count(
                 result,
-                names=(
+                top_level_names=(
                     "demanding_evaluations",
                     "n_demanding_evaluations",
                 ),
+                nested_name="demanding_moments_total",
             )
+
+            result_success = Experiment._extract_success(result)
+
+            if result_success:
+                error = None
+            else:
+                message = Experiment._extract_message(result)
+                error = message or "Estimator reported failure."
 
             return ReplicationResult(
                 replication=replication,
                 estimator=estimator_name,
                 seed=replication_seed,
+                true_parameter=true_parameter.copy(),
                 estimate=estimate,
                 standard_errors=standard_errors,
                 runtime_seconds=elapsed,
                 objective_evaluations=objective_evaluations,
                 demanding_evaluations=demanding_evaluations,
-                success=True,
+                success=result_success,
+                error=error,
             )
 
         except Exception as error:
@@ -205,6 +466,7 @@ class Experiment:
                 replication=replication,
                 estimator=estimator_name,
                 seed=replication_seed,
+                true_parameter=true_parameter.copy(),
                 estimate=np.asarray([], dtype=float),
                 standard_errors=None,
                 runtime_seconds=elapsed,
@@ -213,6 +475,32 @@ class Experiment:
                 success=False,
                 error=f"{type(error).__name__}: {error}",
             )
+
+    @staticmethod
+    def _extract_true_parameter(
+        data: Mapping[str, Any],
+    ) -> FloatArray:
+        if "theta_true" not in data:
+            raise KeyError(
+                "Simulation data must contain 'theta_true'."
+            )
+
+        true_parameter = np.asarray(
+            data["theta_true"],
+            dtype=float,
+        )
+
+        if true_parameter.ndim != 1:
+            raise ValueError(
+                "theta_true must be one-dimensional."
+            )
+
+        if not np.all(np.isfinite(true_parameter)):
+            raise ValueError(
+                "theta_true contains non-finite values."
+            )
+
+        return true_parameter
 
     @staticmethod
     def _extract_array(
@@ -248,19 +536,28 @@ class Experiment:
         array = np.asarray(value, dtype=float)
 
         if array.ndim != 1:
-            raise ValueError("Estimated parameters must be one-dimensional.")
+            raise ValueError(
+                "Estimated parameters and standard errors "
+                "must be one-dimensional."
+            )
+
+        if not np.all(np.isfinite(array)):
+            raise ValueError(
+                "Extracted array contains non-finite values."
+            )
 
         return array
 
     @staticmethod
-    def _extract_integer(
+    def _extract_count(
         result: Any,
         *,
-        names: tuple[str, ...],
+        top_level_names: tuple[str, ...],
+        nested_name: str,
     ) -> int | None:
-        """Extract an optional integer diagnostic."""
+        """Extract a computational count from generic or OrthoGMM results."""
 
-        for name in names:
+        for name in top_level_names:
             if isinstance(result, Mapping) and name in result:
                 value = result[name]
                 return None if value is None else int(value)
@@ -269,5 +566,43 @@ class Experiment:
                 value = getattr(result, name)
                 return None if value is None else int(value)
 
+        counts = (
+            result.get("counts")
+            if isinstance(result, Mapping)
+            else getattr(result, "counts", None)
+        )
+
+        if counts is None:
+            return None
+
+        if isinstance(counts, Mapping) and nested_name in counts:
+            value = counts[nested_name]
+            return None if value is None else int(value)
+
+        if hasattr(counts, nested_name):
+            value = getattr(counts, nested_name)
+            return None if value is None else int(value)
+
         return None
-    
+
+    @staticmethod
+    def _extract_success(result: Any) -> bool:
+        if isinstance(result, Mapping) and "success" in result:
+            return bool(result["success"])
+
+        if hasattr(result, "success"):
+            return bool(getattr(result, "success"))
+
+        return True
+
+    @staticmethod
+    def _extract_message(result: Any) -> str | None:
+        if isinstance(result, Mapping) and "message" in result:
+            value = result["message"]
+            return None if value is None else str(value)
+
+        if hasattr(result, "message"):
+            value = getattr(result, "message")
+            return None if value is None else str(value)
+
+        return None
