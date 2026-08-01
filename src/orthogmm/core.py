@@ -7,15 +7,10 @@ from typing import Any, Literal
 import numpy as np
 from scipy.optimize import minimize
 
-from .covariance import (
-    covariance_blocks_cluster,
-    covariance_blocks_iid,
-    residual_covariance_cluster,
-    residual_covariance_iid,
-)
 from .differentiation import finite_difference_jacobian
 from .exceptions import ModelContractError, NumericalError
 from .linalg import solve, stable_matrix
+from .operators.projection import OrthogonalProjection
 from .types import (
     Array,
     EvaluationCounts,
@@ -345,36 +340,41 @@ def fit_seip(
 
     start = perf_counter()
     if covariance_type == "iid":
-        omega_gg_raw, omega_hg, _ = covariance_blocks_iid(g, h)
         cluster_ids = None
     elif covariance_type == "cluster":
         cluster_ids = _clusters_from_model(model, clusters)
-        omega_gg_raw, omega_hg, _ = covariance_blocks_cluster(g, h, cluster_ids)
     else:
         raise ValueError("covariance_type must be 'iid' or 'cluster'.")
 
-    omega_gg = stable_matrix(omega_gg_raw, ridge=ridge, condition_limit=condition_limit)
-    B = solve(omega_gg.value.T, omega_hg.T).T
-    nu = h - g @ B.T
-    if covariance_type == "iid":
-        S_raw = residual_covariance_iid(nu)
-    else:
-        S_raw = residual_covariance_cluster(nu, cluster_ids)
-    S = stable_matrix(S_raw, ridge=ridge, condition_limit=condition_limit)
+    projection_operator = OrthogonalProjection(
+        ridge=ridge,
+        condition_limit=condition_limit,
+    )
+    projection_result = projection_operator.fit(
+        g=g,
+        h=h,
+        G=G,
+        H=H,
+        covariance_type=covariance_type,
+        clusters=cluster_ids,
+    )
+
+    B = projection_result.coefficient
+    nu = projection_result.residuals
+    S_value = projection_result.residual_covariance
+    R = projection_result.residualized_jacobian
+    J_value = projection_result.information
+    psi = projection_result.projected_score
+    orthogonality = projection_result.orthogonality_residual
+    omega_gg_value = projection_result.omega_gg
+    omega_hg = projection_result.omega_hg
 
     gbar = g.mean(axis=0)
     hbar = h.mean(axis=0)
     nubar = nu.mean(axis=0)
-    R = H - B @ G
-    J_raw = G.T @ solve(omega_gg.value, G) + R.T @ solve(S.value, R)
-    J = stable_matrix(J_raw, ridge=ridge, condition_limit=condition_limit)
-    psi = G.T @ solve(omega_gg.value, gbar) + R.T @ solve(S.value, nubar)
-    update = -damping * solve(J.value, psi)
-    theta = preliminary + update
 
-    gc = g - gbar
-    nuc = nu - nubar
-    orthogonality = gc.T @ nuc / n
+    update = -damping * solve(J_value, psi)
+    theta = preliminary + update
     timings.projection = perf_counter() - start
 
     if bounds is not None:
@@ -394,11 +394,11 @@ def fit_seip(
         warnings.append(
             f"One-step correction is large relative to preliminary estimate ({relative_update:.3g})."
         )
-    if any(x > 0 for x in (omega_gg.ridge, S.ridge, J.ridge)):
+    if any(level > 0 for level in projection_result.ridge_levels.values()):
         warnings.append("Regularization was applied to at least one matrix.")
 
     start = perf_counter()
-    covariance = solve(J.value, np.eye(theta.size)) / n
+    covariance = solve(J_value, np.eye(theta.size)) / n
     standard_errors = np.sqrt(np.maximum(np.diag(covariance), 0.0))
     timings.inference = perf_counter() - start
 
@@ -421,31 +421,25 @@ def fit_seip(
         gbar=gbar,
         hbar=hbar,
         nubar=nubar,
-        omega_gg=omega_gg.value,
+        omega_gg=omega_gg_value,
         omega_hg=omega_hg,
-        residual_covariance=S.value,
+        residual_covariance=S_value,
         projection=B,
         G=G,
         H=H,
         R=R,
-        information=J.value,
+        information=J_value,
         orthogonality_residual=orthogonality,
-        condition_numbers={
-            "omega_gg": omega_gg.condition_number,
-            "residual_covariance": S.condition_number,
-            "information": J.condition_number,
-        },
-        effective_ranks={
-            "omega_gg": omega_gg.effective_rank,
-            "residual_covariance": S.effective_rank,
-            "information": J.effective_rank,
-        },
+        condition_numbers=projection_result.condition_numbers,
+        effective_ranks=projection_result.effective_ranks,
         counts=counts,
         timings=timings,
         regularization=RegularizationInfo(
-            omega_gg=omega_gg.ridge,
-            residual_covariance=S.ridge,
-            information=J.ridge,
+            omega_gg=projection_result.ridge_levels["omega_gg"],
+            residual_covariance=(
+                projection_result.ridge_levels["residual_covariance"]
+            ),
+            information=projection_result.ridge_levels["information"],
         ),
         warnings=warnings,
         optimizer_result=opt,
