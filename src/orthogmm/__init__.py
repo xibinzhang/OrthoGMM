@@ -2,11 +2,31 @@
 
 from .blp import FidelityConfig, MultiFidelityBLPModel
 from .core import fit_full_gmm, fit_seip, fit_tractable_gmm
-from .estimators import BaseEstimator, FullGMM, SEIPEstimator, SOPEstimator, TractableGMM
-from .exceptions import ModelContractError, NumericalError, OrthoGMMError
-from .model import BaseMomentModel
+from .estimators import (
+    BaseEstimator,
+    FullGMM,
+    SEIPEstimator,
+    SOPEstimator,
+    TractableGMM,
+)
+from .exceptions import (
+    ModelContractError,
+    NumericalError,
+    OrthoGMMError,
+)
+from .model import (
+    BaseMomentModel,
+    RandomCoefficientIntegration,
+    RandomCoefficientMomentModel,
+)
 from .operators import OrthogonalProjection, ProjectionResult
-from .types import EvaluationCounts, GMMResult, MomentModel, RegularizationInfo, StageTimings
+from .types import (
+    EvaluationCounts,
+    GMMResult,
+    MomentModel,
+    RegularizationInfo,
+    StageTimings,
+)
 
 __all__ = [
     "BaseEstimator",
@@ -22,6 +42,8 @@ __all__ = [
     "OrthogonalProjection",
     "OrthoGMMError",
     "ProjectionResult",
+    "RandomCoefficientIntegration",
+    "RandomCoefficientMomentModel",
     "RegularizationInfo",
     "SEIPEstimator",
     "SOPEstimator",
