@@ -1,4 +1,4 @@
-from .designs import LinearIVDesign
+from .designs import LinearIVDesign, NonlinearRandomCoefficientDesign
 from .experiment import (
     Experiment,
     ExperimentResults,
@@ -10,6 +10,7 @@ __all__ = [
     "Experiment",
     "ExperimentResults",
     "LinearIVDesign",
+    "NonlinearRandomCoefficientDesign",
     "ParameterSummary",
     "ReplicationResult",
 ]
