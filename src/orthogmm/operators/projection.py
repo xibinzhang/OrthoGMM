@@ -8,11 +8,11 @@ import numpy as np
 from ..covariance import (
     covariance_blocks_cluster,
     covariance_blocks_iid,
-    residual_covariance_cluster,
-    residual_covariance_iid,
 )
-from ..linalg import solve, stable_matrix
+from ..linalg import stable_matrix
 from ..types import Array
+from .base import BaseOperator
+from .covariance import CovarianceOperator
 
 
 CovarianceType = Literal["iid", "cluster"]
@@ -36,12 +36,13 @@ class ProjectionResult:
     ridge_levels: dict[str, float]
 
 
-class OrthogonalProjection:
+class OrthogonalProjection(BaseOperator):
     """Construct the projected efficient GMM objects ``(B, S, R, J)``.
 
     This object implements the sample counterparts of the projection algebra
     developed in Section 3 of the paper. It contains no optimizer and no
-    model-specific code.
+    model-specific code. Covariance estimation and stabilization are delegated
+    to :class:`CovarianceOperator`.
     """
 
     def __init__(
@@ -64,23 +65,8 @@ class OrthogonalProjection:
         covariance_type: CovarianceType = "iid",
         clusters: Array | None = None,
     ) -> ProjectionResult:
-        """Estimate the orthogonal projection and projected GMM objects.
+        """Estimate the orthogonal projection and projected GMM objects."""
 
-        Parameters
-        ----------
-        g
-            Unit-by-tractable-moment matrix.
-        h
-            Unit-by-demanding-moment matrix.
-        G
-            Jacobian of the tractable moments.
-        H
-            Jacobian of the demanding moments.
-        covariance_type
-            Either ``"iid"`` or ``"cluster"``.
-        clusters
-            Cluster identifiers. Required when ``covariance_type="cluster"``.
-        """
         g = np.asarray(g, dtype=float)
         h = np.asarray(h, dtype=float)
         G = np.asarray(G, dtype=float)
@@ -96,46 +82,39 @@ class OrthogonalProjection:
         )
 
         cluster_ids: Array | None
-
         if covariance_type == "iid":
-            omega_gg_raw, omega_hg, _ = covariance_blocks_iid(g, h)
+            _, omega_hg, _ = covariance_blocks_iid(g, h)
             cluster_ids = None
         else:
             cluster_ids = np.asarray(clusters)
-            omega_gg_raw, omega_hg, _ = covariance_blocks_cluster(
+            _, omega_hg, _ = covariance_blocks_cluster(
                 g,
                 h,
                 cluster_ids,
             )
 
-        omega_gg = stable_matrix(
-            omega_gg_raw,
+        omega_gg_result = CovarianceOperator(
             ridge=self.ridge,
             condition_limit=self.condition_limit,
+        ).fit(
+            g,
+            covariance_type=covariance_type,
+            clusters=cluster_ids,
         )
 
         # B = Omega_hg Omega_gg^{-1}
-        coefficient = solve(
-            omega_gg.value.T,
-            omega_hg.T,
-        ).T
+        coefficient = omega_hg @ omega_gg_result.weight
 
         # nu_i = h_i - B g_i
         residuals = h - g @ coefficient.T
 
-        if covariance_type == "iid":
-            residual_covariance_raw = residual_covariance_iid(residuals)
-        else:
-            assert cluster_ids is not None
-            residual_covariance_raw = residual_covariance_cluster(
-                residuals,
-                cluster_ids,
-            )
-
-        residual_covariance = stable_matrix(
-            residual_covariance_raw,
+        residual_covariance_result = CovarianceOperator(
             ridge=self.ridge,
             condition_limit=self.condition_limit,
+        ).fit(
+            residuals,
+            covariance_type=covariance_type,
+            clusters=cluster_ids,
         )
 
         # R = H - B G
@@ -143,12 +122,10 @@ class OrthogonalProjection:
 
         # J = G' Omega_gg^{-1} G + R' S^{-1} R
         information_raw = (
-            G.T @ solve(omega_gg.value, G)
+            G.T @ omega_gg_result.weight @ G
             + residualized_jacobian.T
-            @ solve(
-                residual_covariance.value,
-                residualized_jacobian,
-            )
+            @ residual_covariance_result.weight
+            @ residualized_jacobian
         )
 
         information = stable_matrix(
@@ -162,15 +139,12 @@ class OrthogonalProjection:
 
         # psi = G' Omega_gg^{-1} gbar + R' S^{-1} nubar
         projected_score = (
-            G.T @ solve(omega_gg.value, gbar)
+            G.T @ omega_gg_result.weight @ gbar
             + residualized_jacobian.T
-            @ solve(
-                residual_covariance.value,
-                residual_mean,
-            )
+            @ residual_covariance_result.weight
+            @ residual_mean
         )
 
-        # Sample orthogonality diagnostic.
         centred_g = g - gbar
         centred_residuals = residuals - residual_mean
         orthogonality_residual = (
@@ -180,30 +154,34 @@ class OrthogonalProjection:
         result = ProjectionResult(
             coefficient=coefficient,
             residuals=residuals,
-            residual_covariance=residual_covariance.value,
+            residual_covariance=(
+                residual_covariance_result.covariance
+            ),
             residualized_jacobian=residualized_jacobian,
             information=information.value,
             projected_score=projected_score,
             orthogonality_residual=orthogonality_residual,
-            omega_gg=omega_gg.value,
+            omega_gg=omega_gg_result.covariance,
             omega_hg=omega_hg,
             condition_numbers={
-                "omega_gg": omega_gg.condition_number,
+                "omega_gg": omega_gg_result.condition_number,
                 "residual_covariance": (
-                    residual_covariance.condition_number
+                    residual_covariance_result.condition_number
                 ),
                 "information": information.condition_number,
             },
             effective_ranks={
-                "omega_gg": omega_gg.effective_rank,
+                "omega_gg": omega_gg_result.effective_rank,
                 "residual_covariance": (
-                    residual_covariance.effective_rank
+                    residual_covariance_result.effective_rank
                 ),
                 "information": information.effective_rank,
             },
             ridge_levels={
-                "omega_gg": omega_gg.ridge,
-                "residual_covariance": residual_covariance.ridge,
+                "omega_gg": omega_gg_result.ridge,
+                "residual_covariance": (
+                    residual_covariance_result.ridge
+                ),
                 "information": information.ridge,
             },
         )
@@ -232,7 +210,9 @@ class OrthogonalProjection:
             )
 
         if G.ndim != 2 or H.ndim != 2:
-            raise ValueError("G and H must be two-dimensional matrices.")
+            raise ValueError(
+                "G and H must be two-dimensional matrices."
+            )
 
         if G.shape[1] != H.shape[1]:
             raise ValueError(
@@ -279,5 +259,7 @@ class OrthogonalProjection:
     @property
     def coefficient_(self) -> Array:
         if self.result_ is None:
-            raise RuntimeError("Projection has not been fitted.")
+            raise RuntimeError(
+                "Projection has not been fitted."
+            )
         return self.result_.coefficient
