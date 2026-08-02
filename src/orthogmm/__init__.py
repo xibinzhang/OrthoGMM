@@ -19,7 +19,13 @@ from .model import (
     RandomCoefficientIntegration,
     RandomCoefficientMomentModel,
 )
-from .operators import OrthogonalProjection, ProjectionResult
+from .operators import (
+    BaseOperator,
+    CovarianceOperator,
+    CovarianceResult,
+    OrthogonalProjection,
+    ProjectionResult,
+)
 from .types import (
     EvaluationCounts,
     GMMResult,
@@ -31,6 +37,9 @@ from .types import (
 __all__ = [
     "BaseEstimator",
     "BaseMomentModel",
+    "BaseOperator",
+    "CovarianceOperator",
+    "CovarianceResult",
     "EvaluationCounts",
     "FidelityConfig",
     "FullGMM",
