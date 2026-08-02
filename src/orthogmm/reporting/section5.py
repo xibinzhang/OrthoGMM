@@ -38,7 +38,6 @@ def load_summary_rows(path: str | Path) -> list[dict[str, Any]]:
 
     with source.open("r", newline="", encoding="utf-8") as file:
         reader = csv.DictReader(file)
-
         required = {
             "estimator",
             "parameter_index",
@@ -107,6 +106,7 @@ def baseline_table(
 
     rows = list(rows)
     indexed = _parameter_rows(rows)
+    estimator_order = ("Initial", "Full", "SOP")
     cells = sorted(
         {
             (
@@ -119,19 +119,15 @@ def baseline_table(
         },
         key=lambda value: (
             value[0],
-            ("Initial", "Full", "SOP").index(value[1]),
+            estimator_order.index(value[1]),
         ),
     )
 
     table: list[dict[str, Any]] = []
 
     for n, estimator, basis_k, q_nodes in cells:
-        alpha = indexed[
-            (n, estimator, basis_k, q_nodes, 0)
-        ]
-        beta = indexed[
-            (n, estimator, basis_k, q_nodes, 1)
-        ]
+        alpha = indexed[(n, estimator, basis_k, q_nodes, 0)]
+        beta = indexed[(n, estimator, basis_k, q_nodes, 1)]
 
         table.append(
             {
@@ -139,18 +135,12 @@ def baseline_table(
                 "estimator": estimator,
                 "bias_alpha": alpha["bias"],
                 "rmse_alpha": alpha["rmse"],
-                "sd_alpha": alpha["empirical_sd"],
-                "se_alpha": alpha["mean_standard_error"],
                 "coverage_alpha": alpha["coverage"],
                 "bias_beta": beta["bias"],
                 "rmse_beta": beta["rmse"],
-                "sd_beta": beta["empirical_sd"],
-                "se_beta": beta["mean_standard_error"],
                 "coverage_beta": beta["coverage"],
                 "runtime": alpha["mean_runtime_seconds"],
-                "demanding": alpha[
-                    "mean_demanding_evaluations"
-                ],
+                "demanding": alpha["mean_demanding_evaluations"],
                 "success_rate": alpha["success_rate"],
             }
         )
@@ -158,73 +148,59 @@ def baseline_table(
     return table
 
 
-def complexity_table(
+def complexity_comparison_table(
     rows: Iterable[dict[str, Any]],
     *,
     dimension: str,
 ) -> list[dict[str, Any]]:
-    """Create a compact computational-complexity table.
-
-    Parameters
-    ----------
-    rows
-        Summary rows.
-    dimension
-        Either ``"basis_k"`` or ``"q_nodes"``.
-    """
+    """Create one Full-versus-SOP row per complexity value."""
 
     if dimension not in ("basis_k", "q_nodes"):
         raise ValueError(
             "dimension must be 'basis_k' or 'q_nodes'."
         )
 
-    rows = list(rows)
+    rows = [
+        row
+        for row in rows
+        if int(row["parameter_index"]) == 0
+        and row["estimator"] in ("Full", "SOP")
+    ]
+
+    values = sorted({int(row[dimension]) for row in rows})
     table: list[dict[str, Any]] = []
 
-    cells = sorted(
-        {
-            (
-                int(row[dimension]),
-                str(row["estimator"]),
-            )
+    for value in values:
+        matched = {
+            row["estimator"]: row
             for row in rows
-        },
-        key=lambda value: (
-            value[0],
-            ("Initial", "Full", "SOP").index(value[1]),
-        ),
-    )
+            if int(row[dimension]) == value
+        }
 
-    for value, estimator in cells:
-        matches = [
-            row
-            for row in rows
-            if (
-                int(row[dimension]) == value
-                and row["estimator"] == estimator
-                and int(row["parameter_index"]) == 0
-            )
-        ]
-
-        if len(matches) != 1:
+        if set(matched) != {"Full", "SOP"}:
             raise ValueError(
-                "Expected one parameter-zero summary row for "
-                f"{dimension}={value}, estimator={estimator}."
+                f"Expected Full and SOP rows for {dimension}={value}."
             )
 
-        row = matches[0]
+        full = matched["Full"]
+        sop = matched["SOP"]
+
+        full_time = float(full["mean_runtime_seconds"])
+        sop_time = float(sop["mean_runtime_seconds"])
+        full_demand = float(full["mean_demanding_evaluations"])
+        sop_demand = float(sop["mean_demanding_evaluations"])
+
         table.append(
             {
                 dimension: value,
-                "estimator": estimator,
-                "runtime": row["mean_runtime_seconds"],
-                "objective_evaluations": row[
-                    "mean_objective_evaluations"
-                ],
-                "demanding_evaluations": row[
-                    "mean_demanding_evaluations"
-                ],
-                "success_rate": row["success_rate"],
+                "full_runtime": full_time,
+                "sop_runtime": sop_time,
+                "speedup": full_time / sop_time,
+                "full_demanding": full_demand,
+                "sop_demanding": sop_demand,
+                "demand_reduction": 1.0 - sop_demand / full_demand,
+                "full_success": float(full["success_rate"]),
+                "sop_success": float(sop["success_rate"]),
             }
         )
 
@@ -234,7 +210,7 @@ def complexity_table(
 def _latex_escape(value: Any) -> str:
     text = str(value)
     replacements = {
-        "\\\\": r"\textbackslash{}",
+        "\\": r"\textbackslash{}",
         "&": r"\&",
         "%": r"\%",
         "$": r"\$",
@@ -269,42 +245,68 @@ def write_latex_table(
     digits: int = 4,
     caption: str | None = None,
     label: str | None = None,
+    alignment: str | None = None,
+    raw_headers: bool = False,
+    font_command: str | None = None,
+    tabcolsep: float | None = None,
 ) -> Path:
     """Write a booktabs-style LaTeX table."""
 
     if not rows:
         raise ValueError("rows must not be empty.")
+
     if headers is None:
         headers = columns
+
     if len(headers) != len(columns):
         raise ValueError(
             "headers and columns must have equal length."
         )
 
+    if alignment is None:
+        alignment = "l" + "r" * (len(columns) - 1)
+
+    if len(alignment) != len(columns):
+        raise ValueError(
+            "alignment must contain one specifier per column."
+        )
+
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
 
-    alignment = "l" + "r" * (len(columns) - 1)
     lines: list[str] = []
 
     if caption is not None or label is not None:
         lines.append(r"\begin{table}[!htbp]")
         lines.append(r"\centering")
+
         if caption is not None:
             lines.append(
                 rf"\caption{{{_latex_escape(caption)}}}"
             )
+
         if label is not None:
-            lines.append(
-                rf"\label{{{_latex_escape(label)}}}"
-            )
+            lines.append(rf"\label{{{label}}}")
+
+    if font_command is not None:
+        lines.append(font_command)
+
+    if tabcolsep is not None:
+        lines.append(
+            rf"\setlength{{\tabcolsep}}{{{tabcolsep}pt}}"
+        )
+
+    header_values = (
+        headers
+        if raw_headers
+        else [_latex_escape(item) for item in headers]
+    )
 
     lines.extend(
         [
             rf"\begin{{tabular}}{{{alignment}}}",
             r"\toprule",
-            " & ".join(_latex_escape(item) for item in headers)
-            + r" \\",
+            " & ".join(header_values) + r" \\",
             r"\midrule",
         ]
     )
@@ -339,20 +341,20 @@ def _plot_metric(
     rows: list[dict[str, Any]],
     *,
     x_name: str,
+    x_label: str,
     metric: str,
     ylabel: str,
     path: Path,
 ) -> Path:
     import matplotlib.pyplot as plt
 
-    estimators = ("Initial", "Full", "SOP")
-
     figure = plt.figure()
     axis = figure.add_subplot(111)
 
-    for estimator in estimators:
+    for estimator in ("Full", "SOP"):
         subset = [
-            row for row in rows
+            row
+            for row in rows
             if row["estimator"] == estimator
         ]
         subset.sort(key=lambda row: row[x_name])
@@ -363,7 +365,7 @@ def _plot_metric(
             label=estimator,
         )
 
-    axis.set_xlabel(x_name)
+    axis.set_xlabel(x_label)
     axis.set_ylabel(ylabel)
     axis.legend()
     figure.tight_layout()
@@ -372,6 +374,26 @@ def _plot_metric(
     figure.savefig(path)
     plt.close(figure)
     return path
+
+
+def _complexity_plot_rows(
+    rows: list[dict[str, Any]],
+    *,
+    dimension: str,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            dimension: int(row[dimension]),
+            "estimator": row["estimator"],
+            "runtime": float(row["mean_runtime_seconds"]),
+            "demanding": float(
+                row["mean_demanding_evaluations"]
+            ),
+        }
+        for row in rows
+        if int(row["parameter_index"]) == 0
+        and row["estimator"] in ("Full", "SOP")
+    ]
 
 
 def generate_section5_outputs(
@@ -389,11 +411,11 @@ def generate_section5_outputs(
     quadrature_rows = load_summary_rows(quadrature_csv)
 
     baseline = baseline_table(baseline_rows)
-    basis = complexity_table(
+    basis = complexity_comparison_table(
         basis_rows,
         dimension="basis_k",
     )
-    quadrature = complexity_table(
+    quadrature = complexity_comparison_table(
         quadrature_rows,
         dimension="q_nodes",
     )
@@ -432,6 +454,10 @@ def generate_section5_outputs(
             ],
             caption="Baseline Monte Carlo results.",
             label="tab:section5-baseline",
+            alignment="rlrrrrrrrrr",
+            raw_headers=True,
+            font_command=r"\scriptsize",
+            tabcolsep=3.0,
         )
     )
 
@@ -441,22 +467,32 @@ def generate_section5_outputs(
             output / "table_section5_basis.tex",
             columns=[
                 "basis_k",
-                "estimator",
-                "runtime",
-                "objective_evaluations",
-                "demanding_evaluations",
-                "success_rate",
+                "full_runtime",
+                "sop_runtime",
+                "speedup",
+                "full_demanding",
+                "sop_demanding",
+                "demand_reduction",
+                "full_success",
+                "sop_success",
             ],
             headers=[
                 "$K$",
-                "Estimator",
-                "Time",
-                "Objectives",
-                "Demand",
-                "Success",
+                "Full time",
+                "SOP time",
+                "Speedup",
+                "Full demand",
+                "SOP demand",
+                "Reduction",
+                "Full success",
+                "SOP success",
             ],
             caption="Basis-complexity experiment.",
             label="tab:section5-basis",
+            alignment="rrrrrrrrr",
+            raw_headers=True,
+            font_command=r"\small",
+            tabcolsep=4.0,
         )
     )
 
@@ -466,39 +502,60 @@ def generate_section5_outputs(
             output / "table_section5_quadrature.tex",
             columns=[
                 "q_nodes",
-                "estimator",
-                "runtime",
-                "objective_evaluations",
-                "demanding_evaluations",
-                "success_rate",
+                "full_runtime",
+                "sop_runtime",
+                "speedup",
+                "full_demanding",
+                "sop_demanding",
+                "demand_reduction",
+                "full_success",
+                "sop_success",
             ],
             headers=[
                 "$Q$",
-                "Estimator",
-                "Time",
-                "Objectives",
-                "Demand",
-                "Success",
+                "Full time",
+                "SOP time",
+                "Speedup",
+                "Full demand",
+                "SOP demand",
+                "Reduction",
+                "Full success",
+                "SOP success",
             ],
             caption="Quadrature-complexity experiment.",
             label="tab:section5-quadrature",
+            alignment="rrrrrrrrr",
+            raw_headers=True,
+            font_command=r"\small",
+            tabcolsep=4.0,
         )
     )
 
-    baseline_complexity = [
+    baseline_plot = [
         {
             "n": row["n"],
             "estimator": row["estimator"],
             "runtime": row["runtime"],
-            "demanding_evaluations": row["demanding"],
+            "demanding": row["demanding"],
         }
         for row in baseline
+        if row["estimator"] in ("Full", "SOP")
     ]
+
+    basis_plot = _complexity_plot_rows(
+        basis_rows,
+        dimension="basis_k",
+    )
+    quadrature_plot = _complexity_plot_rows(
+        quadrature_rows,
+        dimension="q_nodes",
+    )
 
     created.append(
         _plot_metric(
-            baseline_complexity,
+            baseline_plot,
             x_name="n",
+            x_label="$n$",
             metric="runtime",
             ylabel="Mean runtime (seconds)",
             path=output / "figure_section5_runtime_n.pdf",
@@ -506,8 +563,9 @@ def generate_section5_outputs(
     )
     created.append(
         _plot_metric(
-            basis,
+            basis_plot,
             x_name="basis_k",
+            x_label="$K$",
             metric="runtime",
             ylabel="Mean runtime (seconds)",
             path=output / "figure_section5_runtime_k.pdf",
@@ -515,8 +573,9 @@ def generate_section5_outputs(
     )
     created.append(
         _plot_metric(
-            quadrature,
+            quadrature_plot,
             x_name="q_nodes",
+            x_label="$Q$",
             metric="runtime",
             ylabel="Mean runtime (seconds)",
             path=output / "figure_section5_runtime_q.pdf",
@@ -524,18 +583,20 @@ def generate_section5_outputs(
     )
     created.append(
         _plot_metric(
-            basis,
+            basis_plot,
             x_name="basis_k",
-            metric="demanding_evaluations",
+            x_label="$K$",
+            metric="demanding",
             ylabel="Mean demanding evaluations",
             path=output / "figure_section5_demand_k.pdf",
         )
     )
     created.append(
         _plot_metric(
-            quadrature,
+            quadrature_plot,
             x_name="q_nodes",
-            metric="demanding_evaluations",
+            x_label="$Q$",
+            metric="demanding",
             ylabel="Mean demanding evaluations",
             path=output / "figure_section5_demand_q.pdf",
         )

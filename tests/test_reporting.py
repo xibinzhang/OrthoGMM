@@ -4,8 +4,12 @@ from pathlib import Path
 from orthogmm.reporting import (
     baseline_table,
     complexity_table,
+    generate_section5_outputs,
     load_summary_rows,
     write_latex_table,
+)
+from orthogmm.reporting.section5 import (
+    complexity_comparison_table,
 )
 
 
@@ -82,24 +86,31 @@ def test_baseline_table_and_latex(tmp_path: Path) -> None:
         table,
         latex,
         columns=["n", "estimator", "runtime"],
-        headers=["n", "Estimator", "Time"],
+        headers=["$n$", "Estimator", "Time"],
+        raw_headers=True,
+        alignment="rlr",
     )
 
     text = latex.read_text(encoding="utf-8")
     assert "\\toprule" in text
+    assert "$n$" in text
+    assert "\\$n\\$" not in text
     assert "Full" in text
 
 
-def test_complexity_table(tmp_path: Path) -> None:
+def test_complexity_comparison_table(tmp_path: Path) -> None:
     source = tmp_path / "summary.csv"
     write_fixture(source)
 
     rows = load_summary_rows(source)
-    table = complexity_table(
+    table = complexity_comparison_table(
         rows,
         dimension="basis_k",
     )
 
-    assert len(table) == 3
-    assert table[2]["estimator"] == "SOP"
-    assert table[2]["demanding_evaluations"] == 6.0
+    assert len(table) == 1
+    row = table[0]
+    assert row["basis_k"] == 1
+    assert row["speedup"] == 5.0
+    assert row["sop_demanding"] == 6.0
+    assert abs(row["demand_reduction"] - (1.0 - 6.0 / 45.0)) < 1e-12
