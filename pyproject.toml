@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "orthogmm"
-version = "0.2.0.dev0"
+version = "1.0.0.dev0"
 description = "Efficient GMM and Sequential Oracle Projection under computational heterogeneity"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -17,6 +17,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.5"]
+reporting = ["matplotlib>=3.8"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -4,7 +4,9 @@ Monte Carlo experiment engine for OrthoGMM.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from csv import DictWriter
+from pathlib import Path
 from time import perf_counter
 from typing import Any, Callable, Mapping
 
@@ -252,6 +254,166 @@ class ExperimentResults:
                 )
 
         return summaries
+
+    def summary(
+        self,
+        *,
+        confidence_level: float = 0.95,
+    ) -> list[ParameterSummary]:
+        """Alias for :meth:`summarize` used by the Version 1.0 API."""
+
+        return self.summarize(confidence_level=confidence_level)
+
+    def summary_table(
+        self,
+        *,
+        confidence_level: float = 0.95,
+        columns: tuple[str, ...] | None = None,
+        digits: int = 4,
+    ) -> str:
+        """Return a readable plain-text summary table."""
+
+        from orthogmm.reporting.benchmark import (
+            _DEFAULT_COLUMNS,
+            format_summary_table,
+            summary_rows,
+        )
+
+        selected_columns = _DEFAULT_COLUMNS if columns is None else columns
+        rows = summary_rows(
+            self.summarize(confidence_level=confidence_level)
+        )
+        return format_summary_table(
+            rows,
+            columns=selected_columns,
+            digits=digits,
+        )
+
+    def to_latex(
+        self,
+        path: str | Path,
+        *,
+        confidence_level: float = 0.95,
+        columns: tuple[str, ...] | None = None,
+        digits: int = 4,
+        caption: str | None = None,
+        label: str | None = None,
+    ) -> Path:
+        """Write the Monte Carlo summary as a LaTeX table."""
+
+        from orthogmm.reporting.benchmark import (
+            _DEFAULT_COLUMNS,
+            summary_rows,
+            write_summary_latex,
+        )
+
+        selected_columns = _DEFAULT_COLUMNS if columns is None else columns
+        rows = summary_rows(
+            self.summarize(confidence_level=confidence_level)
+        )
+        return write_summary_latex(
+            rows,
+            path,
+            columns=selected_columns,
+            digits=digits,
+            caption=caption,
+            label=label,
+        )
+
+    def plot_runtime(self, path: str | Path) -> Path:
+        """Plot mean runtime by estimator."""
+
+        return self._plot_summary_metric(
+            path,
+            metric="mean_runtime_seconds",
+            ylabel="Mean runtime (seconds)",
+        )
+
+    def plot_rmse(self, path: str | Path) -> Path:
+        """Plot RMSE averaged over parameters by estimator."""
+
+        return self._plot_summary_metric(
+            path,
+            metric="rmse",
+            ylabel="RMSE",
+        )
+
+    def plot_demanding_evaluations(self, path: str | Path) -> Path:
+        """Plot mean demanding evaluations by estimator."""
+
+        return self._plot_summary_metric(
+            path,
+            metric="mean_demanding_evaluations",
+            ylabel="Mean demanding evaluations",
+        )
+
+    def _plot_summary_metric(
+        self,
+        path: str | Path,
+        *,
+        metric: str,
+        ylabel: str,
+    ) -> Path:
+        from orthogmm.reporting.benchmark import plot_metric, summary_rows
+
+        rows = summary_rows(self.summarize())
+        return plot_metric(rows, path, metric=metric, ylabel=ylabel)
+
+    def to_csv(
+        self,
+        path: str | Path,
+        *,
+        table: str = "summary",
+        confidence_level: float = 0.95,
+    ) -> Path:
+        """Write replication records or summary statistics to CSV.
+
+        Parameters
+        ----------
+        path
+            Destination file.
+        table
+            Either ``"summary"`` or ``"replications"``.
+        confidence_level
+            Confidence level used when ``table="summary"``.
+        """
+
+        destination = Path(path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
+        if table == "summary":
+            rows = [
+                asdict(row)
+                for row in self.summarize(
+                    confidence_level=confidence_level
+                )
+            ]
+        elif table == "replications":
+            rows = []
+            for record in self.records:
+                row = asdict(record)
+                row["true_parameter"] = record.true_parameter.tolist()
+                row["estimate"] = record.estimate.tolist()
+                row["standard_errors"] = (
+                    None
+                    if record.standard_errors is None
+                    else record.standard_errors.tolist()
+                )
+                rows.append(row)
+        else:
+            raise ValueError(
+                "table must be 'summary' or 'replications'."
+            )
+
+        if not rows:
+            raise ValueError("Cannot export an empty experiment result.")
+
+        with destination.open("w", newline="", encoding="utf-8") as file:
+            writer = DictWriter(file, fieldnames=list(rows[0]))
+            writer.writeheader()
+            writer.writerows(rows)
+
+        return destination
 
     @staticmethod
     def _parameter_dimension(
@@ -606,3 +768,15 @@ class Experiment:
             return None if value is None else str(value)
 
         return None
+
+
+@dataclass
+class MonteCarloBenchmark(Experiment):
+    """Version 1.0 benchmark entry point.
+
+    This class intentionally extends :class:`Experiment`: existing scripts can
+    keep using ``Experiment``, while new user code can use the more descriptive
+    benchmark name without any behavioural differences.
+    """
+
+    pass

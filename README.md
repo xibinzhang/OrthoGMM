@@ -6,7 +6,7 @@ It provides three estimators using one common model interface:
 
 - tractable GMM;
 - full GMM; and
-- Sequential Efficient Influence Projection (SEIP), also called projected GMM.
+- Sequential Oracle Projection (SOP), implemented through projected GMM.
 
 The package is intentionally model-neutral. A model supplies unit-level tractable and demanding moment contributions, and optionally analytical Jacobians and reconstruction routines.
 
@@ -48,6 +48,18 @@ python examples/linear_iv.py
 
 ## Main API
 
+The preferred Version 1.0 functional API is:
+
+```python
+from orthogmm import fit_tractable, fit_projection, fit_full
+
+initial = fit_tractable(model, theta0)
+projected = fit_projection(model, theta0)
+full = fit_full(model, theta0)
+```
+
+The original names remain available for backward compatibility:
+
 ```python
 from orthogmm import fit_tractable_gmm, fit_full_gmm, fit_seip
 ```
@@ -83,3 +95,28 @@ S = projection.residual_covariance
 R = projection.residualized_jacobian
 J = projection.information
 ```
+
+
+## Monte Carlo benchmarks
+
+```python
+from orthogmm import MonteCarloBenchmark
+
+benchmark = MonteCarloBenchmark(
+    design=design,
+    estimators={
+        "Tractable": tractable_runner,
+        "Projection": projection_runner,
+        "Full": full_runner,
+    },
+    repetitions=500,
+    seed=123,
+)
+
+results = benchmark.run()
+summary = results.summary()
+results.to_csv("benchmark_summary.csv")
+results.to_csv("benchmark_replications.csv", table="replications")
+```
+
+See `examples/benchmark_linear_iv.py` for a complete example.

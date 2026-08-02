@@ -18,3 +18,15 @@
 - Added package layers for models, operators, estimators, and diagnostics while retaining
   the original functional API.
 - Added architecture tests and bumped the development version to `0.2.0.dev0`.
+
+
+## 1.0.0.dev0 — API consolidation and benchmark framework
+
+- Added the preferred functional API: `fit_tractable`, `fit_projection`, and `fit_full`.
+- Retained `fit_tractable_gmm`, `fit_seip`, and `fit_full_gmm` without behavioural changes.
+- Exposed `MonteCarloBenchmark` as the canonical benchmark entry point while retaining `Experiment`.
+- Added `ExperimentResults.summary()` as a concise alias for `summarize()`.
+- Added dependency-free CSV export for summary statistics and replication-level records.
+- Added a complete linear-IV benchmark example.
+- Added API-equivalence, benchmark-export, and backward-compatibility tests.
+- Bumped the development version to `1.0.0.dev0`.

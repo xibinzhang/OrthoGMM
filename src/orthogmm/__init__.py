@@ -1,5 +1,6 @@
 """OrthoGMM: efficient GMM under computational heterogeneity."""
 
+from .api import fit_full, fit_projection, fit_tractable
 from .blp import FidelityConfig, MultiFidelityBLPModel
 from .core import fit_full_gmm, fit_seip, fit_tractable_gmm
 from .estimators import (
@@ -26,6 +27,7 @@ from .operators import (
     OrthogonalProjection,
     ProjectionResult,
 )
+from .simulation import MonteCarloBenchmark
 from .types import (
     EvaluationCounts,
     GMMResult,
@@ -46,6 +48,7 @@ __all__ = [
     "GMMResult",
     "ModelContractError",
     "MomentModel",
+    "MonteCarloBenchmark",
     "MultiFidelityBLPModel",
     "NumericalError",
     "OrthogonalProjection",
@@ -58,9 +61,12 @@ __all__ = [
     "SOPEstimator",
     "StageTimings",
     "TractableGMM",
+    "fit_full",
     "fit_full_gmm",
+    "fit_projection",
     "fit_seip",
+    "fit_tractable",
     "fit_tractable_gmm",
 ]
 
-__version__ = "0.2.0.dev0"
+__version__ = "1.0.0.dev0"
