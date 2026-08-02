@@ -9,6 +9,7 @@ from scipy.optimize import minimize
 from .exceptions import ModelContractError
 from .jacobians import FallbackJacobian, JacobianContext
 from .linalg import solve, stable_matrix
+from .operators import CovarianceOperator
 from .operators.projection import OrthogonalProjection
 from .types import (
     Array,
@@ -84,11 +85,8 @@ def _jacobian(
     fd_rel_step: float | None,
     demanding: bool,
 ) -> Array:
-    """Construct a tractable or demanding Jacobian.
+    """Construct a tractable or demanding Jacobian."""
 
-    The default strategy uses a model-supplied analytical Jacobian when
-    available and otherwise falls back to finite differences of mean moments.
-    """
     strategy = FallbackJacobian(rel_step=fd_rel_step)
 
     context = JacobianContext(
@@ -195,12 +193,9 @@ def fit_tractable_gmm(
         demanding=False,
     )
 
-    omega = np.atleast_2d(
-        np.cov(g, rowvar=False, bias=True)
-    )
-    omega_stable = stable_matrix(omega)
+    omega_result = CovarianceOperator().fit(g)
     information = stable_matrix(
-        G.T @ solve(omega_stable.value, G)
+        G.T @ omega_result.weight @ G
     )
     covariance = solve(
         information.value,
@@ -237,21 +232,21 @@ def fit_tractable_gmm(
         message=str(optimizer_result.message),
         objective_value=float(optimizer_result.fun),
         gbar=gbar,
-        omega_gg=omega_stable.value,
+        omega_gg=omega_result.covariance,
         G=G,
         information=information.value,
         condition_numbers={
-            "omega_gg": omega_stable.condition_number,
+            "omega_gg": omega_result.condition_number,
             "information": information.condition_number,
         },
         effective_ranks={
-            "omega_gg": omega_stable.effective_rank,
+            "omega_gg": omega_result.effective_rank,
             "information": information.effective_rank,
         },
         counts=counts,
         timings=timings,
         regularization=RegularizationInfo(
-            omega_gg=omega_stable.ridge,
+            omega_gg=omega_result.ridge,
             information=information.ridge,
         ),
         warnings=warnings,
@@ -269,10 +264,17 @@ def fit_full_gmm(
     optimizer_method: str = "L-BFGS-B",
     optimizer_options: dict[str, Any] | None = None,
     reconstruct: bool = False,
+    covariance_type: CovarianceType = "iid",
+    clusters: Array | None = None,
+    ridge: float = 0.0,
+    condition_limit: float = 1e12,
 ) -> GMMResult:
+    """Fit two-step efficient GMM using the complete moment system."""
+
     theta0 = np.asarray(theta0, dtype=float)
     counts = EvaluationCounts()
     timings = StageTimings()
+    warnings: list[str] = []
 
     g_probe = _moments(
         model,
@@ -295,49 +297,88 @@ def fit_full_gmm(
         )
 
     q = g_probe.shape[1] + h_probe.shape[1]
-    weight_matrix = _validate_weight(weight, q, "weight")
+    stage_one_weight = _validate_weight(
+        weight,
+        q,
+        "weight",
+    )
 
-    def objective(theta: Array) -> float:
-        counts.tractable_objective += 1
+    def stacked_moments(theta: Array) -> Array:
         counts.tractable_moments += 1
         counts.demanding_moments_projection += 1
-
-        mbar = np.concatenate(
-            [
-                _mean_moments(
-                    model,
-                    "tractable_moments",
-                    theta,
-                ),
-                _mean_moments(
-                    model,
-                    "demanding_moments",
-                    theta,
-                ),
-            ]
+        g = _moments(
+            model,
+            "tractable_moments",
+            theta,
         )
+        h = _moments(
+            model,
+            "demanding_moments",
+            theta,
+        )
+        if g.shape[0] != h.shape[0]:
+            raise ModelContractError(
+                "Tractable and demanding moments must share "
+                "statistical units."
+            )
+        return np.column_stack([g, h])
 
+    def criterion(theta: Array, weight_matrix: Array) -> float:
+        counts.tractable_objective += 1
+        mbar = stacked_moments(theta).mean(axis=0)
         return float(mbar @ weight_matrix @ mbar)
 
     start = perf_counter()
-    optimizer_result = minimize(
-        objective,
+
+    stage_one_result = minimize(
+        criterion,
         theta0,
+        args=(stage_one_weight,),
         method=optimizer_method,
         bounds=bounds,
         options=optimizer_options,
     )
+    preliminary = np.asarray(stage_one_result.x, dtype=float)
+
+    moments_stage_one = stacked_moments(preliminary)
+
+    cluster_ids: Array | None
+    if covariance_type == "iid":
+        cluster_ids = None
+    elif covariance_type == "cluster":
+        cluster_ids = _clusters_from_model(
+            model,
+            clusters,
+        )
+    else:
+        raise ValueError(
+            "covariance_type must be 'iid' or 'cluster'."
+        )
+
+    stage_one_covariance = CovarianceOperator(
+        ridge=ridge,
+        condition_limit=condition_limit,
+    ).fit(
+        moments_stage_one,
+        covariance_type=covariance_type,
+        clusters=cluster_ids,
+    )
+
+    stage_two_result = minimize(
+        criterion,
+        preliminary,
+        args=(stage_one_covariance.weight,),
+        method=optimizer_method,
+        bounds=bounds,
+        options=optimizer_options,
+    )
+    theta = np.asarray(stage_two_result.x, dtype=float)
+
     timings.localization = perf_counter() - start
 
-    theta = np.asarray(optimizer_result.x, dtype=float)
-
-    g = _moments(model, "tractable_moments", theta)
-    counts.tractable_moments += 1
-
-    h = _moments(model, "demanding_moments", theta)
-    counts.demanding_moments_projection += 1
-
-    m = np.column_stack([g, h])
+    moments_final = stacked_moments(theta)
+    g = moments_final[:, :g_probe.shape[1]]
+    h = moments_final[:, g_probe.shape[1]:]
 
     start = perf_counter()
 
@@ -361,17 +402,24 @@ def fit_full_gmm(
 
     D = np.vstack([G, H])
 
-    omega = np.atleast_2d(
-        np.cov(m, rowvar=False, bias=True)
+    final_covariance = CovarianceOperator(
+        ridge=ridge,
+        condition_limit=condition_limit,
+    ).fit(
+        moments_final,
+        covariance_type=covariance_type,
+        clusters=cluster_ids,
     )
-    omega_stable = stable_matrix(omega)
+
     information = stable_matrix(
-        D.T @ solve(omega_stable.value, D)
+        D.T @ final_covariance.weight @ D,
+        ridge=ridge,
+        condition_limit=condition_limit,
     )
     covariance = solve(
         information.value,
         np.eye(theta.size),
-    ) / m.shape[0]
+    ) / moments_final.shape[0]
 
     timings.inference = perf_counter() - start
 
@@ -385,43 +433,86 @@ def fit_full_gmm(
         )
         timings.reconstruction = perf_counter() - start
 
-    warnings: list[str] = []
-    if not optimizer_result.success:
+    if not stage_one_result.success:
         warnings.append(
-            "Full GMM optimization did not report convergence."
+            "Full GMM stage-one optimization did not report convergence."
         )
+
+    if not stage_two_result.success:
+        warnings.append(
+            "Full GMM stage-two optimization did not report convergence."
+        )
+
+    if stage_one_covariance.ridge > 0:
+        warnings.append(
+            "Regularization was applied to the stage-one covariance matrix."
+        )
+
+    if final_covariance.ridge > 0:
+        warnings.append(
+            "Regularization was applied to the final covariance matrix."
+        )
+
+    if information.ridge > 0:
+        warnings.append(
+            "Regularization was applied to the information matrix."
+        )
+
+    success = bool(
+        stage_one_result.success
+        and stage_two_result.success
+    )
+    message = (
+        f"Stage 1: {stage_one_result.message}; "
+        f"Stage 2: {stage_two_result.message}"
+    )
 
     return GMMResult(
         method="full_gmm",
         theta=theta,
-        preliminary_theta=theta,
+        preliminary_theta=preliminary,
         covariance=covariance,
         standard_errors=np.sqrt(
             np.maximum(np.diag(covariance), 0.0)
         ),
-        success=bool(optimizer_result.success),
-        message=str(optimizer_result.message),
-        objective_value=float(optimizer_result.fun),
+        success=success,
+        message=message,
+        objective_value=float(stage_two_result.fun),
         gbar=g.mean(axis=0),
         hbar=h.mean(axis=0),
         G=G,
         H=H,
         information=information.value,
         condition_numbers={
-            "omega_full": omega_stable.condition_number,
+            "omega_stage_one": (
+                stage_one_covariance.condition_number
+            ),
+            "omega_full": final_covariance.condition_number,
             "information": information.condition_number,
         },
         effective_ranks={
-            "omega_full": omega_stable.effective_rank,
+            "omega_stage_one": (
+                stage_one_covariance.effective_rank
+            ),
+            "omega_full": final_covariance.effective_rank,
             "information": information.effective_rank,
         },
         counts=counts,
         timings=timings,
         regularization=RegularizationInfo(
+            residual_covariance=(
+                stage_one_covariance.ridge
+            ),
+            omega_gg=final_covariance.ridge,
             information=information.ridge,
         ),
         warnings=warnings,
-        optimizer_result=optimizer_result,
+        optimizer_result={
+            "stage_one": stage_one_result,
+            "stage_two": stage_two_result,
+            "stage_one_weight": stage_one_weight,
+            "efficient_weight": stage_one_covariance.weight,
+        },
         reconstruction=reconstruction,
     )
 
