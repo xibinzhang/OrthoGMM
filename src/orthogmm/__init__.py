@@ -27,7 +27,12 @@ from .operators import (
     OrthogonalProjection,
     ProjectionResult,
 )
-from .simulation import MonteCarloBenchmark
+from .simulation import (
+    ComparisonRecord,
+    ComparisonSummary,
+    EstimatorComparison,
+    MonteCarloBenchmark,
+)
 from .types import (
     EvaluationCounts,
     GMMResult,
@@ -41,7 +46,10 @@ __all__ = [
     "BaseMomentModel",
     "BaseOperator",
     "CovarianceOperator",
+    "ComparisonRecord",
+    "ComparisonSummary",
     "CovarianceResult",
+    "EstimatorComparison",
     "EvaluationCounts",
     "FidelityConfig",
     "FullGMM",

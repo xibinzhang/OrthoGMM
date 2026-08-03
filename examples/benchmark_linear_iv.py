@@ -62,7 +62,31 @@ results.plot_demanding_evaluations(
     output_dir / "benchmark_demanding_evaluations.pdf"
 )
 
+comparison = results.compare(
+    reference="Full",
+    candidate="Projection",
+)
+comparison.to_csv(output_dir / "projection_full_comparison.csv")
+comparison.to_csv(
+    output_dir / "projection_full_replications.csv",
+    table="replications",
+)
+comparison.to_latex(
+    output_dir / "projection_full_comparison.tex",
+    caption="Paired Projection--Full GMM comparison.",
+    label="tab:projection-full-comparison",
+)
+comparison.plot_parameter_distance(
+    output_dir / "projection_full_parameter_distance.pdf"
+)
+comparison.plot_runtime_speedup(
+    output_dir / "projection_full_runtime_speedup.pdf"
+)
+
 print("\nLinear IV benchmark summary")
 print("=" * 100)
 print(results.summary_table())
+print("\nPaired Projection--Full comparison")
+print("=" * 100)
+print(comparison.summary_table())
 print(f"\nSaved benchmark outputs to: {output_dir.resolve()}")

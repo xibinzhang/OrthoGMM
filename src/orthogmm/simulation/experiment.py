@@ -34,6 +34,9 @@ class ReplicationResult:
     demanding_evaluations: int | None
     success: bool
     error: str | None = None
+    covariance: FloatArray | None = None
+    objective_value: float | None = None
+    comparison_objective_value: float | None = None
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,26 @@ class ExperimentResults:
         """Estimator names in first-appearance order."""
 
         return tuple(dict.fromkeys(record.estimator for record in self.records))
+
+
+    def compare(
+        self,
+        *,
+        reference: str,
+        candidate: str,
+    ):
+        """Return a paired candidate-versus-reference comparison.
+
+        Estimator results are paired by replication number and simulation seed.
+        """
+
+        from .comparison import EstimatorComparison
+
+        return EstimatorComparison.from_results(
+            self,
+            reference=reference,
+            candidate=candidate,
+        )
 
     def summarize(
         self,
@@ -399,6 +422,11 @@ class ExperimentResults:
                     if record.standard_errors is None
                     else record.standard_errors.tolist()
                 )
+                row["covariance"] = (
+                    None
+                    if record.covariance is None
+                    else record.covariance.tolist()
+                )
                 rows.append(row)
         else:
             raise ValueError(
@@ -564,6 +592,21 @@ class Experiment:
                 names=("standard_errors", "std_errors", "se"),
                 required=False,
             )
+            covariance = Experiment._extract_matrix(
+                result,
+                names=("covariance", "vcov", "cov"),
+            )
+            objective_value = Experiment._extract_float(
+                result,
+                names=("objective_value", "objective", "criterion_value"),
+            )
+            comparison_objective_value = Experiment._extract_float(
+                result,
+                names=(
+                    "comparison_objective_value",
+                    "common_objective_value",
+                ),
+            )
 
             if estimate.size != true_parameter.size:
                 raise ValueError(
@@ -578,6 +621,12 @@ class Experiment:
                 raise ValueError(
                     "standard_errors must have the same dimension "
                     "as the estimate."
+                )
+
+            if covariance is not None and covariance.shape != (estimate.size, estimate.size):
+                raise ValueError(
+                    "covariance must be square with one row and column "
+                    "per estimated parameter."
                 )
 
             objective_evaluations = Experiment._extract_count(
@@ -614,6 +663,9 @@ class Experiment:
                 true_parameter=true_parameter.copy(),
                 estimate=estimate,
                 standard_errors=standard_errors,
+                covariance=covariance,
+                objective_value=objective_value,
+                comparison_objective_value=comparison_objective_value,
                 runtime_seconds=elapsed,
                 objective_evaluations=objective_evaluations,
                 demanding_evaluations=demanding_evaluations,
@@ -631,6 +683,9 @@ class Experiment:
                 true_parameter=true_parameter.copy(),
                 estimate=np.asarray([], dtype=float),
                 standard_errors=None,
+                covariance=None,
+                objective_value=None,
+                comparison_objective_value=None,
                 runtime_seconds=elapsed,
                 objective_evaluations=None,
                 demanding_evaluations=None,
@@ -709,6 +764,61 @@ class Experiment:
             )
 
         return array
+
+    @staticmethod
+    def _extract_matrix(
+        result: Any,
+        *,
+        names: tuple[str, ...],
+    ) -> FloatArray | None:
+        """Extract a finite two-dimensional matrix from a result."""
+
+        value: Any = None
+        found = False
+        for name in names:
+            if isinstance(result, Mapping) and name in result:
+                value = result[name]
+                found = True
+                break
+            if hasattr(result, name):
+                value = getattr(result, name)
+                found = True
+                break
+
+        if not found or value is None:
+            return None
+
+        matrix = np.asarray(value, dtype=float)
+        if matrix.ndim != 2:
+            raise ValueError("Extracted covariance matrix must be two-dimensional.")
+        if not np.all(np.isfinite(matrix)):
+            raise ValueError("Extracted covariance matrix contains non-finite values.")
+        return matrix
+
+    @staticmethod
+    def _extract_float(
+        result: Any,
+        *,
+        names: tuple[str, ...],
+    ) -> float | None:
+        """Extract one finite scalar from a result."""
+
+        for name in names:
+            if isinstance(result, Mapping) and name in result:
+                value = result[name]
+                break
+            if hasattr(result, name):
+                value = getattr(result, name)
+                break
+        else:
+            return None
+
+        if value is None:
+            return None
+        scalar = float(value)
+        if not np.isfinite(scalar):
+            raise ValueError("Extracted scalar contains a non-finite value.")
+        return scalar
 
     @staticmethod
     def _extract_count(
