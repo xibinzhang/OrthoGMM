@@ -635,6 +635,13 @@ class GridBenchmark:
         Monte Carlo replications in each design cell.
     seed
         Master seed used to derive deterministic cell-level seeds.
+    common_random_numbers
+        If ``True``, every grid cell receives the same Monte Carlo master
+        seed. The underlying :class:`MonteCarloBenchmark` objects therefore
+        reuse the same replication-seed sequence across cells. This is useful
+        for controlled comparisons in which grid parameters change numerical
+        cost but should not change the simulated sample. The default ``False``
+        preserves independent deterministic seed streams across grid cells.
     base_design_parameters
         Fixed keyword arguments supplied to every design instance.
     continue_on_error
@@ -646,6 +653,7 @@ class GridBenchmark:
     estimators: Mapping[str, EstimatorRunner]
     repetitions: int = 1000
     seed: int = 12345
+    common_random_numbers: bool = False
     base_design_parameters: Mapping[str, Any] = field(default_factory=dict)
     continue_on_error: bool = True
 
@@ -654,6 +662,8 @@ class GridBenchmark:
             raise TypeError("design_factory must be callable.")
         if self.repetitions <= 0:
             raise ValueError("repetitions must be positive.")
+        if not isinstance(self.common_random_numbers, bool):
+            raise TypeError("common_random_numbers must be a boolean.")
         if not self.grid:
             raise ValueError("grid must contain at least one parameter.")
         if not self.estimators:
@@ -714,20 +724,35 @@ class GridBenchmark:
             for values in product(*(self.grid[name] for name in names))
         ]
 
+    def cell_seeds(self) -> list[int]:
+        """Return deterministic Monte Carlo master seeds for all grid cells.
+
+        With common random numbers enabled, every cell receives the same
+        master seed and therefore the same replication-seed sequence. With
+        the default independent-cell behaviour, the master seed is split into
+        one deterministic child stream per grid cell.
+        """
+
+        if self.common_random_numbers:
+            return [int(self.seed)] * self.n_cells
+
+        seed_sequence = np.random.SeedSequence(self.seed)
+        child_sequences = seed_sequence.spawn(self.n_cells)
+        return [
+            int(sequence.generate_state(1, dtype=np.uint32)[0])
+            for sequence in child_sequences
+        ]
+
     def run(self) -> GridResults:
         """Run all grid cells and aggregate their experiment results."""
 
         combinations = self.parameter_combinations()
-        seed_sequence = np.random.SeedSequence(self.seed)
-        child_sequences = seed_sequence.spawn(len(combinations))
+        cell_seeds = self.cell_seeds()
         cells: list[GridCellResult] = []
 
-        for index, (parameters, child_sequence) in enumerate(
-            zip(combinations, child_sequences)
+        for index, (parameters, cell_seed) in enumerate(
+            zip(combinations, cell_seeds)
         ):
-            cell_seed = int(
-                child_sequence.generate_state(1, dtype=np.uint32)[0]
-            )
             design_parameters = dict(self.base_design_parameters)
             design_parameters.update(parameters)
             try:
