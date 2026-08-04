@@ -7,6 +7,15 @@ from .experiment import (
     ParameterSummary,
     ReplicationResult,
 )
+from .grid import (
+    GridBenchmark,
+    GridCellResult,
+    GridComparisonCell,
+    GridEstimatorComparison,
+    GridParameterSummary,
+    GridResults,
+)
+
 
 __all__ = [
     "ComparisonRecord",
@@ -14,6 +23,12 @@ __all__ = [
     "EstimatorComparison",
     "Experiment",
     "ExperimentResults",
+    "GridBenchmark",
+    "GridCellResult",
+    "GridComparisonCell",
+    "GridEstimatorComparison",
+    "GridParameterSummary",
+    "GridResults",
     "LinearIVDesign",
     "MonteCarloBenchmark",
     "NonlinearRandomCoefficientDesign",
