@@ -90,6 +90,35 @@ def fit_one(estimator, data, *, basis_k: int, q_nodes: int):
     )
 
 
+def optional_float(value: Any) -> float | str:
+    if value is None:
+        return ""
+    scalar = float(value)
+    return scalar if np.isfinite(scalar) else ""
+
+
+def optional_norm(value: Any) -> float | str:
+    if value is None:
+        return ""
+    array = np.asarray(value, dtype=float)
+    if not np.all(np.isfinite(array)):
+        return ""
+    return float(np.linalg.norm(array))
+
+
+def optional_component(
+    value: Any,
+    index: int,
+) -> float | str:
+    if value is None:
+        return ""
+    array = np.asarray(value, dtype=float)
+    if array.ndim != 1 or index >= array.size:
+        return ""
+    scalar = float(array[index])
+    return scalar if np.isfinite(scalar) else ""
+
+
 def optimizer_fields(result) -> dict[str, Any]:
     out = {
         "stage_one_success": "",
@@ -147,6 +176,40 @@ def result_row(
         "demanding_evaluations": (
             result.counts.demanding_moments_total
         ),
+        "initial_tractable_alpha": optional_component(
+            getattr(result, "initial_tractable_theta", None),
+            0,
+        ),
+        "initial_tractable_beta": optional_component(
+            getattr(result, "initial_tractable_theta", None),
+            1,
+        ),
+        "preliminary_alpha": optional_component(
+            getattr(result, "preliminary_theta", None),
+            0,
+        ),
+        "preliminary_beta": optional_component(
+            getattr(result, "preliminary_theta", None),
+            1,
+        ),
+        "tractable_foc_norm": optional_float(
+            getattr(result, "tractable_foc_norm", None)
+        ),
+        "update_difference_norm": optional_float(
+            getattr(result, "update_difference_norm", None)
+        ),
+        "raw_update_norm": optional_norm(
+            getattr(result, "raw_update", None)
+        ),
+        "full_score_update_norm": optional_norm(
+            getattr(result, "full_score_update", None)
+        ),
+        "residual_only_update_norm": optional_norm(
+            getattr(result, "residual_only_update", None)
+        ),
+        "damping_factor": optional_float(
+            getattr(result, "damping_factor", None)
+        ),
         "warnings": " | ".join(result.warnings),
         "condition_numbers": json.dumps(
             result.condition_numbers,
@@ -202,6 +265,16 @@ def failure_row(
         "wall_time_seconds": elapsed,
         "objective_evaluations": "",
         "demanding_evaluations": "",
+        "initial_tractable_alpha": "",
+        "initial_tractable_beta": "",
+        "preliminary_alpha": "",
+        "preliminary_beta": "",
+        "tractable_foc_norm": "",
+        "update_difference_norm": "",
+        "raw_update_norm": "",
+        "full_score_update_norm": "",
+        "residual_only_update_norm": "",
+        "damping_factor": "",
         "warnings": "",
         "condition_numbers": "",
         "effective_ranks": "",
