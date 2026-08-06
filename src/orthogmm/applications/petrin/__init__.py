@@ -29,3 +29,19 @@ __all__ = [
     "PetrinMicroLocalizer",
     "PetrinTractableLocalizer",
 ]
+
+from .sop import (
+    PetrinResidualOnlySOP,
+    PetrinResidualOnlySOPResult,
+)
+
+try:
+    __all__ = [*__all__,
+        "PetrinResidualOnlySOP",
+        "PetrinResidualOnlySOPResult",
+    ]
+except NameError:
+    __all__ = [
+        "PetrinResidualOnlySOP",
+        "PetrinResidualOnlySOPResult",
+    ]
