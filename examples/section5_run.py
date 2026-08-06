@@ -64,6 +64,91 @@ def make_model(data, *, basis_k: int, q_nodes: int):
     )
 
 
+def standard_accounting(result) -> dict[str, Any]:
+    return {
+        "primary_success": "",
+        "primary_message": "",
+        "retry_attempted": False,
+        "retry_success": "",
+        "retry_message": "",
+        "primary_objective_evaluations": "",
+        "primary_demanding_evaluations": "",
+        "retry_objective_evaluations": "",
+        "retry_demanding_evaluations": "",
+        "total_objective_evaluations": (
+            result.counts.tractable_objective
+        ),
+        "total_demanding_evaluations": (
+            result.counts.demanding_moments_total
+        ),
+    }
+
+
+def fit_full_with_recovery(model):
+    primary = fit_full_gmm(
+        model,
+        theta0=THETA0,
+        bounds=BOUNDS,
+    )
+
+    accounting = {
+        "primary_success": bool(primary.success),
+        "primary_message": str(primary.message),
+        "retry_attempted": False,
+        "retry_success": "",
+        "retry_message": "",
+        "primary_objective_evaluations": (
+            primary.counts.tractable_objective
+        ),
+        "primary_demanding_evaluations": (
+            primary.counts.demanding_moments_total
+        ),
+        "retry_objective_evaluations": 0,
+        "retry_demanding_evaluations": 0,
+        "total_objective_evaluations": (
+            primary.counts.tractable_objective
+        ),
+        "total_demanding_evaluations": (
+            primary.counts.demanding_moments_total
+        ),
+    }
+
+    if primary.success:
+        return primary, accounting
+
+    accounting["retry_attempted"] = True
+
+    retry = fit_full_gmm(
+        model,
+        theta0=np.asarray(primary.theta, dtype=float),
+        bounds=BOUNDS,
+        optimizer_method="L-BFGS-B",
+        optimizer_options={
+            "maxiter": 5000,
+            "maxls": 100,
+            "ftol": 1e-12,
+            "gtol": 1e-8,
+        },
+    )
+
+    accounting["retry_success"] = bool(retry.success)
+    accounting["retry_message"] = str(retry.message)
+    accounting["retry_objective_evaluations"] = (
+        retry.counts.tractable_objective
+    )
+    accounting["retry_demanding_evaluations"] = (
+        retry.counts.demanding_moments_total
+    )
+    accounting["total_objective_evaluations"] += (
+        retry.counts.tractable_objective
+    )
+    accounting["total_demanding_evaluations"] += (
+        retry.counts.demanding_moments_total
+    )
+
+    return retry, accounting
+
+
 def fit_one(estimator, data, *, basis_k: int, q_nodes: int):
     model = make_model(
         data,
@@ -71,23 +156,22 @@ def fit_one(estimator, data, *, basis_k: int, q_nodes: int):
         q_nodes=q_nodes,
     )
     if estimator == "Initial":
-        return fit_tractable_gmm(
+        result = fit_tractable_gmm(
             model,
             theta0=THETA0,
             bounds=BOUNDS,
         )
+        return result, standard_accounting(result)
     if estimator == "Full":
-        return fit_full_gmm(
-            model,
-            theta0=THETA0,
-            bounds=BOUNDS,
-        )
-    return fit_seip(
+        return fit_full_with_recovery(model)
+
+    result = fit_seip(
         model,
         theta0=THETA0,
         bounds=BOUNDS,
         ridge=1e-8,
     )
+    return result, standard_accounting(result)
 
 
 def optional_float(value: Any) -> float | str:
@@ -154,7 +238,9 @@ def result_row(
     truth: np.ndarray,
     result,
     elapsed: float,
+    recovery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    recovery = recovery or {}
     row = {
         "replication": replication,
         "replication_seed": seed,
@@ -172,9 +258,13 @@ def result_row(
         "message": str(result.message),
         "error": "",
         "wall_time_seconds": elapsed,
-        "objective_evaluations": result.counts.tractable_objective,
-        "demanding_evaluations": (
-            result.counts.demanding_moments_total
+        "objective_evaluations": recovery.get(
+            "total_objective_evaluations",
+            result.counts.tractable_objective,
+        ),
+        "demanding_evaluations": recovery.get(
+            "total_demanding_evaluations",
+            result.counts.demanding_moments_total,
         ),
         "initial_tractable_alpha": optional_component(
             getattr(result, "initial_tractable_theta", None),
@@ -209,6 +299,42 @@ def result_row(
         ),
         "damping_factor": optional_float(
             getattr(result, "damping_factor", None)
+        ),
+        "primary_success": recovery.get(
+            "primary_success",
+            "",
+        ),
+        "primary_message": recovery.get(
+            "primary_message",
+            "",
+        ),
+        "retry_attempted": recovery.get(
+            "retry_attempted",
+            False,
+        ),
+        "retry_success": recovery.get(
+            "retry_success",
+            "",
+        ),
+        "retry_message": recovery.get(
+            "retry_message",
+            "",
+        ),
+        "primary_objective_evaluations": recovery.get(
+            "primary_objective_evaluations",
+            "",
+        ),
+        "primary_demanding_evaluations": recovery.get(
+            "primary_demanding_evaluations",
+            "",
+        ),
+        "retry_objective_evaluations": recovery.get(
+            "retry_objective_evaluations",
+            "",
+        ),
+        "retry_demanding_evaluations": recovery.get(
+            "retry_demanding_evaluations",
+            "",
         ),
         "warnings": " | ".join(result.warnings),
         "condition_numbers": json.dumps(
@@ -275,6 +401,15 @@ def failure_row(
         "full_score_update_norm": "",
         "residual_only_update_norm": "",
         "damping_factor": "",
+        "primary_success": "",
+        "primary_message": "",
+        "retry_attempted": "",
+        "retry_success": "",
+        "retry_message": "",
+        "primary_objective_evaluations": "",
+        "primary_demanding_evaluations": "",
+        "retry_objective_evaluations": "",
+        "retry_demanding_evaluations": "",
         "warnings": "",
         "condition_numbers": "",
         "effective_ranks": "",
@@ -317,7 +452,7 @@ def run_cell(
         for estimator in ("Initial", "Full", "SOP"):
             start = perf_counter()
             try:
-                result = fit_one(
+                result, recovery = fit_one(
                     estimator,
                     data,
                     basis_k=basis_k,
@@ -334,6 +469,7 @@ def run_cell(
                         truth=truth,
                         result=result,
                         elapsed=perf_counter() - start,
+                        recovery=recovery,
                     )
                 )
             except Exception as error:

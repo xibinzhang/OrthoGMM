@@ -184,6 +184,81 @@ def main() -> None:
             f"{np.max(update_diff):17.6g}"
         )
 
+    print_recovery_report(rows)
+
+
+def boolean(value: str) -> bool:
+    return value.strip().lower() == "true"
+
+
+def print_recovery_report(
+    rows: list[dict[str, str]],
+) -> None:
+    full_rows = [
+        row for row in rows
+        if row["estimator"] == "Full"
+    ]
+
+    print("\nFull-GMM recovery accounting")
+    print("=" * 112)
+    print(
+        " n   K   Q   runs   initial failures   retries   "
+        "recovered   unrecovered   mean total demanding"
+    )
+    print("-" * 112)
+
+    cells = sorted({
+        (
+            int(row["n"]),
+            int(row["basis_k"]),
+            int(row["q_nodes"]),
+        )
+        for row in full_rows
+    })
+
+    for n, basis_k, q_nodes in cells:
+        cell = [
+            row for row in full_rows
+            if (
+                int(row["n"]) == n
+                and int(row["basis_k"]) == basis_k
+                and int(row["q_nodes"]) == q_nodes
+            )
+        ]
+
+        initial_failures = sum(
+            row.get("primary_success", "") != ""
+            and not boolean(row["primary_success"])
+            for row in cell
+        )
+        retries = sum(
+            boolean(row.get("retry_attempted", ""))
+            for row in cell
+        )
+        recovered = sum(
+            boolean(row.get("retry_attempted", ""))
+            and boolean(row.get("retry_success", ""))
+            for row in cell
+        )
+        unrecovered = sum(
+            not boolean(row.get("success", ""))
+            for row in cell
+        )
+        demanding = np.asarray([
+            number(row, "demanding_evaluations")
+            for row in cell
+        ])
+
+        print(
+            f"{n:4d} {basis_k:3d} {q_nodes:3d} "
+            f"{len(cell):6d} "
+            f"{initial_failures:18d} "
+            f"{retries:9d} "
+            f"{recovered:11d} "
+            f"{unrecovered:13d} "
+            f"{np.mean(demanding):21.3f}"
+        )
+
 
 if __name__ == "__main__":
     main()
