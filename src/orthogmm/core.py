@@ -536,7 +536,7 @@ def fit_seip(
     orthogonality_tolerance: float = 1e-7,
     relative_update_warning: float = 0.25,
 ) -> GMMResult:
-    """Fit the canonical projected one-step estimator."""
+    """Fit residual-only SOP with matched tractable localization."""
 
     if not (0.0 < damping <= 1.0):
         raise ValueError("damping must lie in (0, 1].")
@@ -545,58 +545,38 @@ def fit_seip(
     counts = EvaluationCounts()
     timings = StageTimings()
     warnings: list[str] = []
+    tractable_weight_matrix: Array | None = None
 
-    if preliminary_theta is None:
-        probe = _moments(
+    probe = _moments(
+        model,
+        "tractable_moments",
+        theta0,
+    )
+    counts.tractable_moments += 1
+    q_g = probe.shape[1]
+
+    if covariance_type == "iid":
+        localization_cluster_ids = None
+    elif covariance_type == "cluster":
+        localization_cluster_ids = _clusters_from_model(
             model,
-            "tractable_moments",
-            theta0,
+            clusters,
         )
-        counts.tractable_moments += 1
-
-        tractable_weight_matrix = _validate_weight(
-            tractable_weight,
-            probe.shape[1],
-            "tractable_weight",
-        )
-
-        def objective(theta: Array) -> float:
-            counts.tractable_objective += 1
-            counts.tractable_moments += 1
-
-            gbar = _mean_moments(
-                model,
-                "tractable_moments",
-                theta,
-            )
-
-            return float(
-                gbar @ tractable_weight_matrix @ gbar
-            )
-
-        start = perf_counter()
-        optimizer_result = minimize(
-            objective,
-            theta0,
-            method=optimizer_method,
-            bounds=bounds,
-            options=optimizer_options,
-        )
-        timings.localization = perf_counter() - start
-
-        preliminary = np.asarray(
-            optimizer_result.x,
-            dtype=float,
-        )
-        success = bool(optimizer_result.success)
-        message = str(optimizer_result.message)
-        objective_value = float(optimizer_result.fun)
-
-        if not success:
-            warnings.append(
-                "Tractable localization did not report convergence."
-            )
     else:
+        raise ValueError(
+            "covariance_type must be 'iid' or 'cluster'."
+        )
+
+    stage_one_result = None
+    stage_two_result = None
+    stage_one_covariance = None
+    stage_one_weight = None
+
+    if preliminary_theta is not None:
+        # Backward-compatible expert path: the supplied value is treated as
+        # the final tractable localizer. The supplied tractable weight should
+        # be the fixed weight used to construct that estimator. If omitted,
+        # the historical identity-weight convention is retained.
         preliminary = np.asarray(
             preliminary_theta,
             dtype=float,
@@ -608,10 +588,153 @@ def fit_seip(
                 "the same shape."
             )
 
-        optimizer_result = None
+        initial_tractable = preliminary.copy()
+        tractable_weight_matrix = _validate_weight(
+            tractable_weight,
+            q_g,
+            "tractable_weight",
+        )
         success = True
-        message = "User-supplied preliminary estimator."
+        message = "User-supplied final tractable estimator."
         objective_value = None
+        optimizer_result = None
+    else:
+        localization_start = perf_counter()
+
+        if tractable_weight is None:
+            # Stage 1: inexpensive identity-weight localization.
+            stage_one_weight = _identity_weight(q_g)
+
+            def stage_one_tractable_objective(theta: Array) -> float:
+                counts.tractable_objective += 1
+                counts.tractable_moments += 1
+                gbar_stage_one = _mean_moments(
+                    model,
+                    "tractable_moments",
+                    theta,
+                )
+                return float(
+                    gbar_stage_one
+                    @ stage_one_weight
+                    @ gbar_stage_one
+                )
+
+            stage_one_result = minimize(
+                stage_one_tractable_objective,
+                theta0,
+                method=optimizer_method,
+                bounds=bounds,
+                options=optimizer_options,
+            )
+            initial_tractable = np.asarray(
+                stage_one_result.x,
+                dtype=float,
+            )
+
+            g_stage_one = _moments(
+                model,
+                "tractable_moments",
+                initial_tractable,
+            )
+            counts.tractable_moments += 1
+
+            stage_one_covariance = CovarianceOperator(
+                ridge=ridge,
+                condition_limit=condition_limit,
+            ).fit(
+                g_stage_one,
+                covariance_type=covariance_type,
+                clusters=localization_cluster_ids,
+            )
+            tractable_weight_matrix = stage_one_covariance.weight
+        else:
+            # A user-supplied weight is already fixed before the final
+            # tractable optimization, so no preliminary weighting stage is
+            # required.
+            initial_tractable = theta0.copy()
+            tractable_weight_matrix = _validate_weight(
+                tractable_weight,
+                q_g,
+                "tractable_weight",
+            )
+
+        # Stage 2: final tractable optimization with W_g held fixed. This is
+        # the estimator denoted by tilde-theta in Section 3.
+        def stage_two_tractable_objective(theta: Array) -> float:
+            counts.tractable_objective += 1
+            counts.tractable_moments += 1
+            gbar_stage_two = _mean_moments(
+                model,
+                "tractable_moments",
+                theta,
+            )
+            return float(
+                gbar_stage_two
+                @ tractable_weight_matrix
+                @ gbar_stage_two
+            )
+
+        stage_two_result = minimize(
+            stage_two_tractable_objective,
+            initial_tractable,
+            method=optimizer_method,
+            bounds=bounds,
+            options=optimizer_options,
+        )
+        preliminary = np.asarray(
+            stage_two_result.x,
+            dtype=float,
+        )
+        timings.localization = perf_counter() - localization_start
+
+        stage_one_success = (
+            True
+            if stage_one_result is None
+            else bool(stage_one_result.success)
+        )
+        success = bool(
+            stage_one_success
+            and stage_two_result.success
+        )
+
+        if stage_one_result is None:
+            stage_one_message = "supplied fixed tractable weight"
+        else:
+            stage_one_message = str(stage_one_result.message)
+
+        message = (
+            f"Tractable stage 1: {stage_one_message}; "
+            f"tractable stage 2: {stage_two_result.message}"
+        )
+        objective_value = float(stage_two_result.fun)
+        optimizer_result = {
+            "stage_one": stage_one_result,
+            "stage_two": stage_two_result,
+            "stage_one_weight": stage_one_weight,
+            "tractable_weight": tractable_weight_matrix,
+            "tractable_weight_covariance": stage_one_covariance,
+        }
+
+        if stage_one_result is not None and not stage_one_result.success:
+            warnings.append(
+                "Tractable stage-one optimization did not report "
+                "convergence."
+            )
+
+        if not stage_two_result.success:
+            warnings.append(
+                "Final matched-weight tractable optimization did not "
+                "report convergence."
+            )
+
+        if (
+            stage_one_covariance is not None
+            and stage_one_covariance.ridge > 0
+        ):
+            warnings.append(
+                "Regularization was applied when constructing the "
+                "tractable weighting matrix."
+            )
 
     start = perf_counter()
 
@@ -621,6 +744,13 @@ def fit_seip(
         preliminary,
     )
     counts.tractable_moments += 1
+
+    if tractable_weight_matrix is None:
+        tractable_weight_matrix = _validate_weight(
+            tractable_weight,
+            g.shape[1],
+            "tractable_weight",
+        )
 
     h = _moments(
         model,
@@ -687,6 +817,7 @@ def fit_seip(
         H=H,
         covariance_type=covariance_type,
         clusters=cluster_ids,
+        tractable_weight=tractable_weight_matrix,
     )
 
     coefficient = projection_result.coefficient
@@ -698,6 +829,8 @@ def fit_seip(
         projection_result.residualized_jacobian
     )
     information = projection_result.information
+    tractable_score = projection_result.tractable_score
+    residual_score = projection_result.residual_score
     projected_score = projection_result.projected_score
     orthogonality = (
         projection_result.orthogonality_residual
@@ -707,11 +840,31 @@ def fit_seip(
     hbar = h.mean(axis=0)
     nubar = residuals.mean(axis=0)
 
-    update = -damping * solve(
+    # Diagnostic update using the complete transformed score.
+    full_score_update = -solve(
         information,
         projected_score,
     )
+
+    # Canonical Section 3 residual-only SOP update.
+    residual_only_update = -solve(
+        information,
+        residual_score,
+    )
+
+    raw_update = residual_only_update
+    update = damping * raw_update
     theta = preliminary + update
+
+    tractable_foc_norm = float(
+        np.linalg.norm(tractable_score)
+    )
+    update_difference_norm = float(
+        np.linalg.norm(
+            full_score_update
+            - residual_only_update
+        )
+    )
 
     timings.projection = perf_counter() - start
 
@@ -785,12 +938,22 @@ def fit_seip(
         method="seip",
         theta=theta,
         preliminary_theta=preliminary,
+        initial_tractable_theta=initial_tractable,
         covariance=covariance,
         standard_errors=standard_errors,
         success=success,
         message=message,
         objective_value=objective_value,
         update=update,
+        raw_update=raw_update,
+        full_score_update=full_score_update,
+        residual_only_update=residual_only_update,
+        tractable_score=tractable_score,
+        residual_score=residual_score,
+        tractable_weight=tractable_weight_matrix,
+        tractable_foc_norm=tractable_foc_norm,
+        update_difference_norm=update_difference_norm,
+        damping_factor=damping,
         gbar=gbar,
         hbar=hbar,
         nubar=nubar,
