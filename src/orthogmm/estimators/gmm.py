@@ -24,10 +24,10 @@ class FullGMM(BaseEstimator):
 
 
 class SOPEstimator(BaseEstimator):
-    """Sequential Oracle Projection estimator.
+    """Sequential Orthogonal Projection estimator.
 
-    ``fit_seip`` is retained as a backward-compatible functional alias. The
-    class name follows the terminology used in Section 3 of the revised paper.
+    ``fit_seip`` and ``SEIPEstimator`` are retained as backward-compatible
+    aliases.
     """
 
     def fit(self, model: MomentModel, theta0: Array, **kwargs: Any) -> GMMResult:

@@ -27,6 +27,9 @@ class ProjectionResult:
     residual_covariance: Array
     residualized_jacobian: Array
     information: Array
+    tractable_weight: Array
+    tractable_score: Array
+    residual_score: Array
     projected_score: Array
     orthogonality_residual: Array
     omega_gg: Array
@@ -64,6 +67,7 @@ class OrthogonalProjection(BaseOperator):
         *,
         covariance_type: CovarianceType = "iid",
         clusters: Array | None = None,
+        tractable_weight: Array | None = None,
     ) -> ProjectionResult:
         """Estimate the orthogonal projection and projected GMM objects."""
 
@@ -102,6 +106,40 @@ class OrthogonalProjection(BaseOperator):
             clusters=cluster_ids,
         )
 
+        if tractable_weight is None:
+            # Backward-compatible standalone use of the operator.
+            tractable_weight_matrix = omega_gg_result.weight
+        else:
+            tractable_weight_matrix = np.asarray(
+                tractable_weight,
+                dtype=float,
+            )
+
+            expected_shape = (g.shape[1], g.shape[1])
+            if tractable_weight_matrix.shape != expected_shape:
+                raise ValueError(
+                    "tractable_weight must have shape "
+                    f"{expected_shape}, received "
+                    f"{tractable_weight_matrix.shape}."
+                )
+
+            if not np.all(np.isfinite(tractable_weight_matrix)):
+                raise ValueError(
+                    "tractable_weight must contain only finite values."
+                )
+
+            tractable_weight_matrix = 0.5 * (
+                tractable_weight_matrix
+                + tractable_weight_matrix.T
+            )
+
+            try:
+                np.linalg.cholesky(tractable_weight_matrix)
+            except np.linalg.LinAlgError as exc:
+                raise ValueError(
+                    "tractable_weight must be positive definite."
+                ) from exc
+
         # B = Omega_hg Omega_gg^{-1}
         coefficient = omega_hg @ omega_gg_result.weight
 
@@ -120,9 +158,10 @@ class OrthogonalProjection(BaseOperator):
         # R = H - B G
         residualized_jacobian = H - coefficient @ G
 
-        # J = G' Omega_gg^{-1} G + R' S^{-1} R
+        # J = G' W_g G + R' S^{-1} R, where W_g is the same
+        # fixed weight used during final tractable localization.
         information_raw = (
-            G.T @ omega_gg_result.weight @ G
+            G.T @ tractable_weight_matrix @ G
             + residualized_jacobian.T
             @ residual_covariance_result.weight
             @ residualized_jacobian
@@ -137,13 +176,23 @@ class OrthogonalProjection(BaseOperator):
         gbar = g.mean(axis=0)
         residual_mean = residuals.mean(axis=0)
 
-        # psi = G' Omega_gg^{-1} gbar + R' S^{-1} nubar
-        projected_score = (
-            G.T @ omega_gg_result.weight @ gbar
-            + residualized_jacobian.T
+        # Tractable score: zero at an exactly solved matched-weight
+        # tractable optimum.
+        tractable_score = (
+            G.T
+            @ tractable_weight_matrix
+            @ gbar
+        )
+
+        # Canonical residual-only SOP score.
+        residual_score = (
+            residualized_jacobian.T
             @ residual_covariance_result.weight
             @ residual_mean
         )
+
+        # Full transformed score, retained as a diagnostic.
+        projected_score = tractable_score + residual_score
 
         centred_g = g - gbar
         centred_residuals = residuals - residual_mean
@@ -159,6 +208,9 @@ class OrthogonalProjection(BaseOperator):
             ),
             residualized_jacobian=residualized_jacobian,
             information=information.value,
+            tractable_weight=tractable_weight_matrix,
+            tractable_score=tractable_score,
+            residual_score=residual_score,
             projected_score=projected_score,
             orthogonality_residual=orthogonality_residual,
             omega_gg=omega_gg_result.covariance,

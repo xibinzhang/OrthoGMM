@@ -31,8 +31,18 @@ class ToyBLPModel(MultiFidelityBLPModel):
         )
 
         self.x = rng.normal(size=(n_markets, 2))
-        self.zg = rng.normal(size=(n_markets, 2))
-        self.zh = rng.normal(size=(n_markets, 2))
+
+        # The tractable moments must identify the full parameter, as required
+        # by Assumption 3.2. Noisy copies of x provide strong but non-identical
+        # tractable and demanding instruments.
+        self.zg = self.x + rng.normal(
+            scale=0.25,
+            size=(n_markets, 2),
+        )
+        self.zh = self.x + rng.normal(
+            scale=0.50,
+            size=(n_markets, 2),
+        )
         self.truth = np.array([1.0, -0.5])
         self.y = self.x @ self.truth + rng.normal(
             scale=0.25,
@@ -103,3 +113,14 @@ def test_full_and_sop_are_close_for_toy_blp() -> None:
     assert sop.counts.demanding_moments_total < (
         full.counts.demanding_moments_total
     )
+
+
+def test_toy_blp_tractable_block_identifies_full_parameter() -> None:
+    model = ToyBLPModel(seed=456, n_markets=1000)
+
+    tractable_jacobian = -(
+        model.zg.T @ model.x
+    ) / model.x.shape[0]
+
+    assert np.linalg.matrix_rank(tractable_jacobian) == 2
+    assert np.linalg.cond(tractable_jacobian) < 10.0

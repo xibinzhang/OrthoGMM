@@ -98,6 +98,16 @@ class GMMResult:
     message: str
     objective_value: float | None = None
     update: Array | None = None
+    raw_update: Array | None = None
+    full_score_update: Array | None = None
+    residual_only_update: Array | None = None
+    tractable_score: Array | None = None
+    residual_score: Array | None = None
+    tractable_weight: Array | None = None
+    tractable_foc_norm: float | None = None
+    update_difference_norm: float | None = None
+    damping_factor: float = 1.0
+    initial_tractable_theta: Array | None = None
     gbar: Array | None = None
     hbar: Array | None = None
     nubar: Array | None = None
@@ -129,6 +139,16 @@ class GMMResult:
         ]
         if self.update is not None:
             lines.append(f"Update norm: {np.linalg.norm(self.update):.6g}")
+        if self.tractable_foc_norm is not None:
+            lines.append(
+                "Tractable FOC norm: "
+                f"{self.tractable_foc_norm:.6g}"
+            )
+        if self.update_difference_norm is not None:
+            lines.append(
+                "Full/residual update difference: "
+                f"{self.update_difference_norm:.6g}"
+            )
         if self.condition_numbers:
             lines.append(f"Condition numbers: {self.condition_numbers}")
         lines.append(f"Evaluation counts: {self.counts.as_dict()}")
